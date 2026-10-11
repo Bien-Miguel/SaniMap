@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<restroom>
+    <restroomId>101</restroomId>
+    <name>Rizal Monument Comfort Room</name>
+    <latitude>14.5826</latitude>
+    <longitude>120.9787</longitude>
+    <operatingHours>06:00-20:00</operatingHours>
+    <pwdAccessible>true</pwdAccessible>
+    <genderType>Unisex</genderType>
+    <amenities>
+        <amenity>Handwashing Station</amenity>
+        <amenity>Soap</amenity>
+        <amenity>Bidet</amenity>
+    </amenities>
+    <status>open</status>
+</restroom>
