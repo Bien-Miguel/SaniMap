@@ -4,6 +4,8 @@ venv/
 # Python cache files
 __pycache__/
 *.pyc
+services/service_a/registry.db
+services/service_b/reporting.db
 
 # OS-specific junk files
 .DS_Store
