@@ -13,3 +13,8 @@ Thumbs.db
 
 # VS Code settings
 .vscode/
+
+# Secrets
+.env
+.env.*
+!.env.example
