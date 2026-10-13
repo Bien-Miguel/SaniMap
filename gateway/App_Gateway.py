@@ -1,3 +1,5 @@
+import os
+
 from flask import Flask, request, Response, jsonify
 import requests
 
@@ -7,8 +9,16 @@ SERVICE_A_URL = "http://127.0.0.1:5001"
 SERVICE_B_URL = "http://127.0.0.1:5002"
 TIMEOUT_SECONDS = 5
 
+# Methods the gateway is willing to forward to a backend service.
+FORWARDED_METHODS = {"GET", "POST", "PUT"}
 
-def forward_request(base_url, path, method="GET"):
+
+def forward_request(base_url, path):
+    """Forward the current request (method, query string, body) to a backend."""
+    method = request.method
+    if method not in FORWARDED_METHODS:
+        return jsonify({"error": "METHOD_NOT_ALLOWED"}), 405
+
     url = f"{base_url}{path}"
     forward_headers = {}
     if "Content-Type" in request.headers:
@@ -16,13 +26,22 @@ def forward_request(base_url, path, method="GET"):
     if "Accept" in request.headers:
         forward_headers["Accept"] = request.headers["Accept"]
 
+    # Pass the raw query string through unchanged so encoding, repeated
+    # parameters and optional parameters are preserved exactly as received.
+    query_string = request.query_string.decode("latin-1")
+    if query_string:
+        url = f"{url}?{query_string}"
+
+    body = request.get_data() if method in {"POST", "PUT"} else None
+
     try:
-        if method == "GET":
-            resp = requests.get(url, headers=forward_headers, timeout=TIMEOUT_SECONDS)
-        elif method == "POST":
-            resp = requests.post(url, headers=forward_headers, data=request.get_data(), timeout=TIMEOUT_SECONDS)
-        else:
-            return jsonify({"error": "METHOD_NOT_ALLOWED"}), 405
+        resp = requests.request(
+            method,
+            url,
+            headers=forward_headers,
+            data=body,
+            timeout=TIMEOUT_SECONDS,
+        )
 
         return Response(
             resp.content,
@@ -41,6 +60,16 @@ def forward_request(base_url, path, method="GET"):
             "error": "SERVICE_TIMEOUT",
             "message": f"Backend service at {base_url} timed out."
         }), 503
+
+
+@app.errorhandler(404)
+def handle_not_found(_error):
+    return jsonify({"error": "NOT_FOUND", "message": "Route not found."}), 404
+
+
+@app.errorhandler(405)
+def handle_method_not_allowed(_error):
+    return jsonify({"error": "METHOD_NOT_ALLOWED"}), 405
 
 
 @app.route("/health", methods=["GET"])
@@ -62,23 +91,34 @@ def aggregated_health():
 
 @app.route("/restrooms", methods=["GET", "POST"])
 def restrooms_root():
-    return forward_request(SERVICE_A_URL, "/restrooms", method=request.method)
+    return forward_request(SERVICE_A_URL, "/restrooms")
 
 
 @app.route("/restrooms/<restroom_id>", methods=["GET"])
 def get_restroom(restroom_id):
-    return forward_request(SERVICE_A_URL, f"/restrooms/{restroom_id}", method="GET")
+    return forward_request(SERVICE_A_URL, f"/restrooms/{restroom_id}")
+
+
+@app.route("/restrooms/<restroom_id>/status", methods=["PUT"])
+def update_restroom_status(restroom_id):
+    return forward_request(SERVICE_A_URL, f"/restrooms/{restroom_id}/status")
 
 
 @app.route("/feedback", methods=["POST"])
 def create_feedback():
-    return forward_request(SERVICE_B_URL, "/feedback", method="POST")
+    return forward_request(SERVICE_B_URL, "/feedback")
 
 
 @app.route("/feedback/<restroom_id>", methods=["GET"])
 def get_feedback(restroom_id):
-    return forward_request(SERVICE_B_URL, f"/feedback/{restroom_id}", method="GET")
+    return forward_request(SERVICE_B_URL, f"/feedback/{restroom_id}")
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # Debug mode is OFF unless GATEWAY_DEBUG=1 is set explicitly (local dev only).
+    # Host defaults to localhost; set GATEWAY_HOST=0.0.0.0 only when needed.
+    app.run(
+        host=os.environ.get("GATEWAY_HOST", "127.0.0.1"),
+        port=int(os.environ.get("GATEWAY_PORT", "5000")),
+        debug=os.environ.get("GATEWAY_DEBUG") == "1",
+    )
