@@ -1,16 +1,54 @@
+import logging
+import math
 import os
+import re
 import sys
+import threading
+import time
+from collections import deque
 
 import jwt
 import requests
 from dotenv import load_dotenv
 from flask import Flask, request, Response, jsonify
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Loads the local, git-ignored .env file (JWT_SECRET, ORS_API_KEY, ...).
 load_dotenv()
 
+
+class RedactQueryStringFilter(logging.Filter):
+    """Hides URL query strings in access logs.
+
+    /directions requests carry the visitor's coordinates, and the proposal commits to
+    not keeping any location history on the server.
+    """
+
+    _query = re.compile(r"(?<=\s)(/[^\s?]*)\?\S*")
+
+    def filter(self, record):
+        record.msg = self._query.sub(r"\1?[redacted]", record.getMessage())
+        record.args = ()
+        return True
+
+
+logging.getLogger("werkzeug").addFilter(RedactQueryStringFilter())
+
 # The gateway serves no static files, so the default /static route is disabled.
 app = Flask(__name__, static_folder=None)
+
+
+def trusted_proxy_count():
+    """How many reverse proxies (e.g. a cloud host) sit in front of the gateway."""
+    try:
+        return max(0, int(os.environ.get("TRUSTED_PROXY_COUNT", "0")))
+    except ValueError:
+        return 0
+
+
+# Only trust X-Forwarded-For when told how many proxies to trust (default: none).
+if trusted_proxy_count() > 0:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=trusted_proxy_count())
 
 SERVICE_A_URL = "http://127.0.0.1:5001"
 SERVICE_B_URL = "http://127.0.0.1:5002"
@@ -22,6 +60,25 @@ FORWARDED_METHODS = {"GET", "POST", "PUT"}
 JWT_ALGORITHM = "HS256"
 MIN_SECRET_LENGTH = 32
 
+# OpenRouteService (ORS) directions. The key is read from ORS_API_KEY at request time.
+ORS_DEFAULT_BASE_URL = "https://api.heigit.org/openrouteservice/v2"
+ORS_TIMEOUT_SECONDS = 10
+ORS_ATTRIBUTION = "openrouteservice.org | OpenStreetMap contributors"
+DEFAULT_PROFILE = "foot-walking"
+SUPPORTED_PROFILES = ("foot-walking",)
+
+# Rate limits per rolling window: name -> (max per client IP, max across all clients).
+# The directions total stays below ORS's free Standard limit of 40 requests/minute.
+RATE_LIMIT_WINDOW_SECONDS = 60
+RATE_LIMITS = {
+    "directions": (10, 30),
+    "feedback": (5, None),
+}
+RATE_LIMITED_ROUTES = {
+    ("GET", "/directions"): "directions",
+    ("POST", "/feedback"): "feedback",
+}
+
 # Access policy (default deny): every gateway route must be listed here.
 #   None  -> public, no token needed
 #   tuple -> a valid Bearer token whose "role" claim is one of these roles
@@ -31,6 +88,7 @@ STAFF = ("admin", "park_manager")
 
 ROUTE_POLICY = {
     ("GET", "/health"): PUBLIC,
+    ("GET", "/directions"): PUBLIC,
     ("GET", "/health/all"): STAFF,
     ("GET", "/restrooms"): PUBLIC,
     ("POST", "/restrooms"): ADMIN,
@@ -65,6 +123,85 @@ def config_problems():
     return problems
 
 
+class SlidingWindowLimiter:
+    """Small in-memory rolling-window rate limiter (resets when the gateway restarts)."""
+
+    def __init__(self, window_seconds, clock=time.monotonic):
+        self.window = window_seconds
+        self.clock = clock
+        self._hits = {}
+        self._lock = threading.Lock()
+        self._calls = 0
+
+    def reset(self):
+        with self._lock:
+            self._hits.clear()
+
+    def allow(self, checks):
+        """checks is a list of (key, max_requests).
+
+        A hit is recorded for every key only when all keys are under their limit.
+        Returns (allowed, retry_after_seconds).
+        """
+        with self._lock:
+            now = self.clock()
+            cutoff = now - self.window
+            self._calls += 1
+            if self._calls % 500 == 0:
+                self._sweep(cutoff)
+
+            blocked = False
+            retry_after = 0
+            for key, limit in checks:
+                hits = self._hits.setdefault(key, deque())
+                while hits and hits[0] <= cutoff:
+                    hits.popleft()
+                if len(hits) >= limit:
+                    blocked = True
+                    retry_after = max(retry_after, int(hits[0] + self.window - now) + 1)
+            if blocked:
+                return False, retry_after
+
+            for key, _limit in checks:
+                self._hits[key].append(now)
+            return True, 0
+
+    def _sweep(self, cutoff):
+        stale = [key for key, hits in self._hits.items() if not hits or hits[-1] <= cutoff]
+        for key in stale:
+            del self._hits[key]
+
+
+limiter = SlidingWindowLimiter(RATE_LIMIT_WINDOW_SECONDS)
+
+
+def reset_rate_limits():
+    limiter.reset()
+
+
+def apply_rate_limit(policy_key):
+    name = RATE_LIMITED_ROUTES.get(policy_key)
+    if name is None:
+        return None
+
+    per_client, overall = RATE_LIMITS[name]
+    checks = [(f"{name}:ip:{request.remote_addr}", per_client)]
+    if overall is not None:
+        checks.append((f"{name}:all", overall))
+
+    allowed, retry_after = limiter.allow(checks)
+    if allowed:
+        return None
+
+    response = jsonify({
+        "error": "RATE_LIMITED",
+        "message": "Too many requests. Please try again later.",
+    })
+    response.status_code = 429
+    response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
 def auth_error(code, message, status):
     response = jsonify({"error": code, "message": message})
     response.status_code = status
@@ -93,7 +230,7 @@ def enforce_access_policy():
 
     allowed_roles = ROUTE_POLICY[policy_key]
     if allowed_roles is None:
-        return None
+        return apply_rate_limit(policy_key)
 
     # Protected route: fail closed if security settings are missing.
     if config_problems():
@@ -187,6 +324,189 @@ def handle_method_not_allowed(_error):
     return jsonify({"error": "METHOD_NOT_ALLOWED"}), 405
 
 
+class BadRouteResponse(Exception):
+    """The routing service answered, but not in the structure we expect."""
+
+
+def validation_error(field, message):
+    response = jsonify({"error": "VALIDATION_ERROR", "field": field, "message": message})
+    response.status_code = 400
+    return response
+
+
+def routing_error(code, message, status, retry_after=None):
+    response = jsonify({"error": code, "message": message})
+    response.status_code = status
+    if retry_after is not None:
+        response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
+def parse_coordinate(args, name, low, high):
+    """Return (value, None) or (None, error_response) for one query parameter."""
+    raw = args.get(name)
+    if raw is None or raw.strip() == "":
+        return None, validation_error(name, f"{name} is required.")
+    try:
+        value = float(raw)
+    except ValueError:
+        return None, validation_error(name, f"{name} must be a number.")
+    if not math.isfinite(value) or not low <= value <= high:
+        return None, validation_error(name, f"{name} must be between {low} and {high}.")
+    return value, None
+
+
+def is_secure_base_url(base_url):
+    """The API key is only ever sent over HTTPS (or to a local test server)."""
+    return base_url.startswith(("https://", "http://127.0.0.1:", "http://localhost:"))
+
+
+def transform_ors_route(payload, profile, start, end):
+    """Convert an ORS GeoJSON route into SaniMap's response schema.
+
+    ORS coordinates are [longitude, latitude]; the output path uses
+    [latitude, longitude] so Leaflet can draw it without any conversion.
+    """
+    try:
+        feature = payload["features"][0]
+        summary = feature["properties"]["summary"]
+        distance = float(summary["distance"])
+        duration = float(summary["duration"])
+        raw_coordinates = feature["geometry"]["coordinates"]
+
+        path = []
+        for point in raw_coordinates:
+            lng, lat = float(point[0]), float(point[1])  # ignore any elevation value
+            if not (math.isfinite(lat) and math.isfinite(lng)
+                    and -90 <= lat <= 90 and -180 <= lng <= 180):
+                raise BadRouteResponse("coordinate out of range")
+            path.append([lat, lng])
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise BadRouteResponse("unexpected route structure") from exc
+
+    if (len(path) < 2 or not math.isfinite(distance) or not math.isfinite(duration)
+            or distance < 0 or duration < 0):
+        raise BadRouteResponse("invalid route values")
+
+    steps = []
+    segments = feature["properties"].get("segments")
+    for segment in segments if isinstance(segments, list) else []:
+        raw_steps = segment.get("steps") if isinstance(segment, dict) else None
+        for step in raw_steps if isinstance(raw_steps, list) else []:
+            if not isinstance(step, dict):
+                continue
+            try:
+                steps.append({
+                    "instruction": str(step.get("instruction") or "")[:300],
+                    "distance_meters": float(step.get("distance") or 0),
+                    "duration_seconds": float(step.get("duration") or 0),
+                })
+            except (TypeError, ValueError):
+                continue
+
+    latitudes = [point[0] for point in path]
+    longitudes = [point[1] for point in path]
+    return {
+        "profile": profile,
+        "distance_meters": distance,
+        "duration_seconds": duration,
+        "start": {"lat": start[0], "lng": start[1]},
+        "end": {"lat": end[0], "lng": end[1]},
+        "path": path,
+        "bounds": [[min(latitudes), min(longitudes)], [max(latitudes), max(longitudes)]],
+        "steps": steps,
+        "attribution": ORS_ATTRIBUTION,
+    }
+
+
+def upstream_error_response(status):
+    # Log only the status code: never the key, the URL or the user's coordinates.
+    app.logger.warning("OpenRouteService returned HTTP %s", status)
+    if status in (400, 404):
+        return routing_error(
+            "ROUTE_NOT_FOUND", "No walking route could be found between these points.", 422
+        )
+    if status == 429:
+        return routing_error(
+            "ROUTING_BUSY", "The routing service is busy. Please try again shortly.", 503,
+            retry_after=60,
+        )
+    return routing_error(
+        "ROUTING_SERVICE_ERROR", "The routing service is currently unavailable.", 502
+    )
+
+
+@app.route("/directions", methods=["GET"])
+def directions():
+    values = {}
+    for name, low, high in (
+        ("start_lat", -90, 90), ("start_lng", -180, 180),
+        ("end_lat", -90, 90), ("end_lng", -180, 180),
+    ):
+        value, error = parse_coordinate(request.args, name, low, high)
+        if error is not None:
+            return error
+        values[name] = value
+
+    profile = request.args.get("profile", DEFAULT_PROFILE)
+    if profile not in SUPPORTED_PROFILES:
+        return validation_error("profile", f"profile must be one of {list(SUPPORTED_PROFILES)}.")
+
+    api_key = os.environ.get("ORS_API_KEY", "").strip()
+    base_url = os.environ.get("ORS_BASE_URL", ORS_DEFAULT_BASE_URL).rstrip("/")
+    if not api_key or not is_secure_base_url(base_url):
+        return routing_error(
+            "ROUTING_NOT_CONFIGURED", "Directions are not available right now.", 503
+        )
+
+    # ORS expects longitude first, then latitude.
+    url = (
+        f"{base_url}/directions/{profile}"
+        f"?start={values['start_lng']:.6f},{values['start_lat']:.6f}"
+        f"&end={values['end_lng']:.6f},{values['end_lat']:.6f}"
+    )
+    try:
+        resp = requests.request(
+            "GET",
+            url,
+            headers={
+                "Authorization": api_key,
+                "Accept": "application/geo+json, application/json",
+            },
+            timeout=ORS_TIMEOUT_SECONDS,
+        )
+    except requests.exceptions.Timeout:
+        app.logger.warning("OpenRouteService request timed out")
+        return routing_error(
+            "ROUTING_TIMEOUT", "The routing service took too long to respond.", 504
+        )
+    except requests.exceptions.RequestException as exc:
+        app.logger.warning("OpenRouteService request failed: %s", type(exc).__name__)
+        return routing_error(
+            "ROUTING_SERVICE_ERROR", "The routing service is currently unavailable.", 502
+        )
+
+    if resp.status_code != 200:
+        return upstream_error_response(resp.status_code)
+
+    try:
+        route = transform_ors_route(
+            resp.json(),
+            profile,
+            (values["start_lat"], values["start_lng"]),
+            (values["end_lat"], values["end_lng"]),
+        )
+    except (ValueError, BadRouteResponse):  # invalid JSON or unexpected structure
+        app.logger.warning("OpenRouteService returned an unexpected response")
+        return routing_error(
+            "ROUTING_BAD_RESPONSE", "The routing service returned an unexpected response.", 502
+        )
+
+    response = jsonify(route)
+    response.headers["Cache-Control"] = "no-store"  # the request contains the user's location
+    return response
+
+
 @app.route("/health", methods=["GET"])
 def gateway_health():
     return jsonify({"service": "API Gateway", "status": "UP"}), 200
@@ -246,6 +566,9 @@ if __name__ == "__main__":
         for problem in problems:
             print(f"Startup refused: {problem}", file=sys.stderr)
         sys.exit(1)
+
+    if not os.environ.get("ORS_API_KEY", "").strip():
+        print("Warning: ORS_API_KEY is not set; /directions will return 503.", file=sys.stderr)
 
     # Debug mode is OFF unless GATEWAY_DEBUG=1 is set explicitly (local dev only).
     app.run(host=host, port=int(os.environ.get("GATEWAY_PORT", "5000")), debug=debug)
