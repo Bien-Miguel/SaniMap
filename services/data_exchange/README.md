@@ -29,3 +29,26 @@ When a client sends a POST request to /restrooms with a JSON body, Flask's reque
 
 The GET /restrooms endpoint follows the serialization half of this same flow on its own: it takes the current application data (the restrooms list) and directly serializes it into a JSON response with a 200 OK status, so any client can retrieve the current list of comfort rooms.
 Together, these two endpoints demonstrate the full JSON data exchange cycle required by Part 5: JSON Request → Deserialization → Application Data → Validation → Business Processing → Serialization.
+
+## Gateway Mapping Integration
+
+The API Gateway also provides JSON adapters for mapping services:
+
+| Endpoint | Request | JSON response |
+| --- | --- | --- |
+| `GET /geocode` | `q` is a manually submitted place/address, maximum 200 characters | `results` with `label`, `lat`, `lng`, optional OSM IDs, and attribution |
+| `GET /reverse-geocode` | `lat` and `lng` coordinates | `result` with `label`, `lat`, `lng`, and attribution |
+| `GET /directions` | `start_lat`, `start_lng`, `end_lat`, `end_lng`; optional `profile=foot-walking` | `path` in Leaflet `[lat, lng]` order, bounds, distance, duration, steps, and attribution |
+
+The Gateway calls Nominatim for explicit place searches and reverse lookups,
+and OpenRouteService (ORS) for walking routes. It transforms provider
+responses into one frontend-friendly schema. Nominatim requests use a SaniMap
+User-Agent, a one-hour in-memory cache, and a strict one-request-per-second
+upstream throttle. Do not use the public Nominatim endpoint for autocomplete.
+OpenStreetMap tile rendering remains a frontend responsibility and requires
+visible OpenStreetMap attribution.
+
+Nominatim requires no API key. Configure `NOMINATIM_BASE_URL` only to switch
+providers, and optionally set `SANIMAP_CONTACT_EMAIL` for the identifying
+User-Agent. Walking directions require an ORS key in `ORS_API_KEY`; keep it in
+the Gateway's ignored `.env` file or deployment secrets, never in client code.

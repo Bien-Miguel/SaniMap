@@ -5,7 +5,7 @@ import re
 import sys
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 
 import jwt
 import requests
@@ -67,15 +67,27 @@ ORS_ATTRIBUTION = "openrouteservice.org | OpenStreetMap contributors"
 DEFAULT_PROFILE = "foot-walking"
 SUPPORTED_PROFILES = ("foot-walking",)
 
+# Nominatim public service: direct user searches only, at most one upstream
+# request per second, with a short-lived in-memory cache.
+NOMINATIM_DEFAULT_BASE_URL = "https://nominatim.openstreetmap.org"
+NOMINATIM_TIMEOUT_SECONDS = 5
+NOMINATIM_MIN_INTERVAL_SECONDS = 1.0
+NOMINATIM_CACHE_TTL_SECONDS = 3600
+NOMINATIM_CACHE_MAX_ENTRIES = 128
+NOMINATIM_ATTRIBUTION = "OpenStreetMap contributors"
+
 # Rate limits per rolling window: name -> (max per client IP, max across all clients).
 # The directions total stays below ORS's free Standard limit of 40 requests/minute.
 RATE_LIMIT_WINDOW_SECONDS = 60
 RATE_LIMITS = {
     "directions": (10, 30),
     "feedback": (5, None),
+    "geocoding": (5, None),
 }
 RATE_LIMITED_ROUTES = {
     ("GET", "/directions"): "directions",
+    ("GET", "/geocode"): "geocoding",
+    ("GET", "/reverse-geocode"): "geocoding",
     ("POST", "/feedback"): "feedback",
 }
 
@@ -89,6 +101,8 @@ STAFF = ("admin", "park_manager")
 ROUTE_POLICY = {
     ("GET", "/health"): PUBLIC,
     ("GET", "/directions"): PUBLIC,
+    ("GET", "/geocode"): PUBLIC,
+    ("GET", "/reverse-geocode"): PUBLIC,
     ("GET", "/health/all"): STAFF,
     ("GET", "/restrooms"): PUBLIC,
     ("POST", "/restrooms"): ADMIN,
@@ -340,6 +354,240 @@ def routing_error(code, message, status, retry_after=None):
     if retry_after is not None:
         response.headers["Retry-After"] = str(retry_after)
     return response
+
+
+class NominatimClient:
+    """Identify, throttle, and briefly cache requests to a Nominatim instance."""
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._last_request_at = None
+        self._cache = OrderedDict()
+
+    def reset(self):
+        with self._lock:
+            self._last_request_at = None
+            self._cache.clear()
+
+    def get(self, endpoint, params):
+        base_url = os.environ.get(
+            "NOMINATIM_BASE_URL", NOMINATIM_DEFAULT_BASE_URL
+        ).rstrip("/")
+        if not is_secure_base_url(base_url):
+            return None, (
+                "GEOCODING_NOT_CONFIGURED",
+                "Geocoding is not available right now.",
+                503,
+                None,
+            )
+
+        url = f"{base_url}/{endpoint}"
+        cache_key = (url, tuple(sorted(params.items())))
+        with self._lock:
+            now = self.clock()
+            for key, (expires_at, _payload) in list(self._cache.items()):
+                if expires_at <= now:
+                    del self._cache[key]
+
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                self._cache.move_to_end(cache_key)
+                return cached[1], None
+
+            if (
+                self._last_request_at is not None
+                and now - self._last_request_at < NOMINATIM_MIN_INTERVAL_SECONDS
+            ):
+                return None, (
+                    "GEOCODING_RATE_LIMITED",
+                    "Please wait before searching for another location.",
+                    429,
+                    1,
+                )
+
+            self._last_request_at = now
+            contact = os.environ.get("SANIMAP_CONTACT_EMAIL", "").strip()
+            user_agent = "SaniMap/1.0 (Luneta Park sanitation mapping"
+            if contact:
+                user_agent += f"; contact: {contact}"
+            user_agent += ")"
+
+            try:
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers={"User-Agent": user_agent},
+                    timeout=NOMINATIM_TIMEOUT_SECONDS,
+                )
+            except requests.exceptions.Timeout:
+                return None, (
+                    "GEOCODING_TIMEOUT",
+                    "The geocoding service took too long to respond.",
+                    504,
+                    None,
+                )
+            except requests.exceptions.RequestException as exc:
+                app.logger.warning("Nominatim request failed: %s", type(exc).__name__)
+                return None, (
+                    "GEOCODING_SERVICE_ERROR",
+                    "The geocoding service is currently unavailable.",
+                    502,
+                    None,
+                )
+
+            if response.status_code == 429:
+                return None, (
+                    "GEOCODING_BUSY",
+                    "The geocoding service is busy. Please try again later.",
+                    503,
+                    60,
+                )
+            if response.status_code == 404:
+                return None, (
+                    "GEOCODING_NOT_FOUND",
+                    "No matching location was found.",
+                    404,
+                    None,
+                )
+            if response.status_code != 200:
+                app.logger.warning(
+                    "Nominatim returned HTTP %s", response.status_code
+                )
+                return None, (
+                    "GEOCODING_SERVICE_ERROR",
+                    "The geocoding service is currently unavailable.",
+                    502,
+                    None,
+                )
+
+            try:
+                payload = response.json()
+            except (TypeError, ValueError):
+                return None, (
+                    "GEOCODING_BAD_RESPONSE",
+                    "The geocoding service returned an unexpected response.",
+                    502,
+                    None,
+                )
+
+            self._cache[cache_key] = (
+                self.clock() + NOMINATIM_CACHE_TTL_SECONDS,
+                payload,
+            )
+            self._cache.move_to_end(cache_key)
+            while len(self._cache) > NOMINATIM_CACHE_MAX_ENTRIES:
+                self._cache.popitem(last=False)
+            return payload, None
+
+
+nominatim_client = NominatimClient()
+
+
+def transform_nominatim_result(payload):
+    """Normalize one Nominatim result to the Gateway's coordinate schema."""
+    try:
+        latitude = float(payload["lat"])
+        longitude = float(payload["lon"])
+        label = payload["display_name"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BadRouteResponse("unexpected geocoding result") from exc
+
+    if (
+        not isinstance(label, str)
+        or not label.strip()
+        or not math.isfinite(latitude)
+        or not math.isfinite(longitude)
+        or not -90 <= latitude <= 90
+        or not -180 <= longitude <= 180
+    ):
+        raise BadRouteResponse("invalid geocoding result")
+
+    result = {
+        "label": label[:300],
+        "lat": latitude,
+        "lng": longitude,
+    }
+    if isinstance(payload.get("osm_type"), str):
+        result["osm_type"] = payload["osm_type"][:20]
+    if isinstance(payload.get("osm_id"), int) and not isinstance(
+        payload["osm_id"], bool
+    ):
+        result["osm_id"] = payload["osm_id"]
+    return result
+
+
+def nominatim_error(error):
+    code, message, status, retry_after = error
+    return routing_error(code, message, status, retry_after)
+
+
+def geocoding_response(payload, reverse=False):
+    try:
+        if reverse:
+            result = transform_nominatim_result(payload)
+            body = {"result": result}
+        else:
+            if not isinstance(payload, list):
+                raise BadRouteResponse("unexpected search response")
+            body = {"results": [transform_nominatim_result(item) for item in payload]}
+    except (BadRouteResponse, TypeError):
+        app.logger.warning("Nominatim returned an unexpected response")
+        return routing_error(
+            "GEOCODING_BAD_RESPONSE",
+            "The geocoding service returned an unexpected response.",
+            502,
+        )
+
+    body["attribution"] = NOMINATIM_ATTRIBUTION
+    response = jsonify(body)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/geocode", methods=["GET"])
+def geocode_location():
+    query = request.args.get("q", "").strip()
+    if not query or len(query) > 200:
+        return validation_error("q", "q is required and must be at most 200 characters.")
+
+    payload, error = nominatim_client.get(
+        "search",
+        {
+            "q": query,
+            "format": "jsonv2",
+            "limit": 5,
+            "countrycodes": "ph",
+            "addressdetails": 1,
+        },
+    )
+    if error:
+        return nominatim_error(error)
+    return geocoding_response(payload)
+
+
+@app.route("/reverse-geocode", methods=["GET"])
+def reverse_geocode_location():
+    latitude, error = parse_coordinate(request.args, "lat", -90, 90)
+    if error:
+        return error
+    longitude, error = parse_coordinate(request.args, "lng", -180, 180)
+    if error:
+        return error
+
+    payload, error = nominatim_client.get(
+        "reverse",
+        {
+            "lat": latitude,
+            "lon": longitude,
+            "format": "jsonv2",
+            "zoom": 18,
+            "addressdetails": 1,
+        },
+    )
+    if error:
+        return nominatim_error(error)
+    return geocoding_response(payload, reverse=True)
 
 
 def parse_coordinate(args, name, low, high):

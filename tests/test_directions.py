@@ -462,5 +462,154 @@ class LimiterUnitTests(unittest.TestCase):
         self.assertEqual(list(limiter._hits), ["fresh"])
 
 
+class GeocodingTests(unittest.TestCase):
+    def setUp(self):
+        gateway.app.config["TESTING"] = True
+        self.client = gateway.app.test_client()
+        self.env = patch.dict(os.environ, {
+            "NOMINATIM_BASE_URL": "https://nominatim.example.test",
+            "SANIMAP_CONTACT_EMAIL": "sanimap@example.test",
+        })
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        request_patch = patch("gateway.App_Gateway.requests.get")
+        self.mock_get = request_patch.start()
+        self.addCleanup(request_patch.stop)
+        self.mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value=[{
+                "lat": "14.5826",
+                "lon": "120.9787",
+                "display_name": "Rizal Monument, Manila, Philippines",
+                "osm_type": "node",
+                "osm_id": 123,
+            }]),
+        )
+        gateway.nominatim_client.reset()
+        gateway.reset_rate_limits()
+        self.addCleanup(gateway.nominatim_client.reset)
+        self.addCleanup(gateway.reset_rate_limits)
+
+    def test_search_returns_normalized_coordinates_and_attribution(self):
+        response = self.client.get("/geocode?q=Rizal%20Monument")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {
+            "results": [{
+                "label": "Rizal Monument, Manila, Philippines",
+                "lat": 14.5826,
+                "lng": 120.9787,
+                "osm_type": "node",
+                "osm_id": 123,
+            }],
+            "attribution": "OpenStreetMap contributors",
+        })
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    def test_search_uses_nominatim_without_an_api_key_and_identifies_sanimap(self):
+        self.client.get("/geocode?q=Rizal%20Monument")
+
+        args, kwargs = self.mock_get.call_args
+        self.assertEqual(args[0], "https://nominatim.example.test/search")
+        self.assertEqual(kwargs["params"], {
+            "q": "Rizal Monument",
+            "format": "jsonv2",
+            "limit": 5,
+            "countrycodes": "ph",
+            "addressdetails": 1,
+        })
+        self.assertIn("SaniMap/1.0", kwargs["headers"]["User-Agent"])
+        self.assertIn("sanimap@example.test", kwargs["headers"]["User-Agent"])
+        self.assertNotIn("Authorization", kwargs["headers"])
+
+    def test_search_is_cached_in_process(self):
+        first = self.client.get("/geocode?q=Rizal%20Monument")
+        second = self.client.get("/geocode?q=Rizal%20Monument")
+
+        self.assertEqual(first.get_json(), second.get_json())
+        self.mock_get.assert_called_once()
+
+    def test_search_requires_a_bounded_query(self):
+        for query in ("", "x" * 201):
+            with self.subTest(query_length=len(query)):
+                response = self.client.get("/geocode", query_string={"q": query})
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.get_json()["field"], "q")
+        self.mock_get.assert_not_called()
+
+    def test_reverse_geocoding_returns_normalized_place(self):
+        self.mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value={
+                "lat": "14.5826",
+                "lon": "120.9787",
+                "display_name": "Rizal Monument, Manila, Philippines",
+            }),
+        )
+
+        response = self.client.get("/reverse-geocode?lat=14.5826&lng=120.9787")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["result"], {
+            "label": "Rizal Monument, Manila, Philippines",
+            "lat": 14.5826,
+            "lng": 120.9787,
+        })
+        args, kwargs = self.mock_get.call_args
+        self.assertEqual(args[0], "https://nominatim.example.test/reverse")
+        self.assertEqual(kwargs["params"]["lat"], 14.5826)
+        self.assertEqual(kwargs["params"]["lon"], 120.9787)
+
+    def test_reverse_geocoding_validates_coordinates_before_request(self):
+        response = self.client.get("/reverse-geocode?lat=91&lng=120.9787")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["field"], "lat")
+        self.mock_get.assert_not_called()
+
+    def test_results_with_invalid_coordinates_return_bad_gateway(self):
+        self.mock_get.return_value = Mock(
+            status_code=200,
+            json=Mock(return_value=[{
+                "lat": "95",
+                "lon": "120.9787",
+                "display_name": "Invalid location",
+            }]),
+        )
+
+        response = self.client.get("/geocode?q=invalid")
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_json()["error"], "GEOCODING_BAD_RESPONSE")
+
+    def test_nominatim_calls_are_throttled_to_one_per_second(self):
+        self.assertEqual(self.client.get("/geocode?q=first").status_code, 200)
+
+        response = self.client.get("/geocode?q=second")
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.headers["Retry-After"], "1")
+        self.mock_get.assert_called_once()
+
+    def test_nominatim_rate_limit_maps_to_retryable_service_unavailable(self):
+        self.mock_get.return_value.status_code = 429
+
+        response = self.client.get("/geocode?q=Rizal%20Monument")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error"], "GEOCODING_BUSY")
+        self.assertEqual(response.headers["Retry-After"], "60")
+
+    def test_non_https_public_nominatim_url_is_rejected(self):
+        with patch.dict(os.environ, {
+            "NOMINATIM_BASE_URL": "http://nominatim.example.test",
+        }):
+            response = self.client.get("/geocode?q=Rizal%20Monument")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_json()["error"], "GEOCODING_NOT_CONFIGURED")
+        self.mock_get.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
