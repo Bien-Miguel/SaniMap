@@ -1,0 +1,46 @@
+# Python environments and caches
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local secrets and environment files (commit templates only)
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.postman_environment.json
+
+# Local databases and SQLite sidecar files
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# OS-specific junk files
+.DS_Store
+Thumbs.db
+
+# Editor settings
+.vscode/
+
+# Frontend dependencies and build output
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
+# Test, coverage, log, and load-test output
+coverage/
+htmlcov/
+.coverage*
+*.log
+jmeter-results/
+jmeter-report/
+results.jtl
