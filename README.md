@@ -1,13 +1,68 @@
-# SaniMap_group2_Lab6
----
-# Project Overview
+# SaniMap
 
-## Comfort Room Mapping API for Luneta Park
+SaniMap is a Luneta Park comfort-room finder with a React map, a Registry
+service, a Reporting service, and a JWT-protected API Gateway.
 
-The **Comfort Room Mapping API** is a service-oriented and microservice-based system designed to improve access to reliable information about comfort rooms within **Rizal Park (Luneta)**. The project addresses the difficulty visitors may experience in finding available and accessible comfort rooms, as well as reporting facilities that are closed, damaged, or unsanitary.
+## Project structure
 
-The system is composed of two independent microservices: the **Comfort Room Registry Service** and the **Reporting and Feedback Service**. The Comfort Room Registry Service manages verified restroom information such as location, operating hours, accessibility features, amenities, and current operational status. Meanwhile, the Reporting and Feedback Service manages visitor-submitted reports and feedback concerning restroom conditions.
+| Path | Purpose |
+| --- | --- |
+| `frontend/` | React/Vite visitor map and staff dashboard |
+| `gateway/` | Public API entry point, authorization, routing, and external API integrations |
+| `services/service_a/` | SQLite-backed restroom Registry |
+| `services/service_b/` | SQLite-backed visitor Reporting service |
+| `tests/` | Python unit and integration tests |
+| `tools/` | Local seed and short-lived staff-token utilities |
+| `SaniMap.postman_collection.json` | Postman API smoke and integration requests |
+| `docs/` | Setup, testing, Railway deployment, and JMeter guidance |
 
-An **API Gateway** serves as the single entry point for clients and routes requests to the appropriate backend service. Requests involving `/restrooms` are directed to the Comfort Room Registry Service, while `/feedback` requests are handled by the Reporting and Feedback Service. This architecture allows the services to operate independently while still communicating with each other when necessary.
+## Local development
 
-The project uses **REST APIs** for communication and supports both **JSON and XML data exchange** through content negotiation. The system also implements validation and structured error handling to prevent invalid data, malformed requests, and references to non-existent restrooms from being stored.
+Use Python 3.10+ and Node.js 18+ with npm. From the repository root:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+npm --prefix frontend ci
+```
+
+Copy `.env.example` to `.env`, provide a random `JWT_SECRET` (at least 32
+characters), and fill in the optional ORS key only if you want directions.
+Never commit `.env`, staff tokens, or API keys.
+
+Start the Registry (`python services\service_a\App_ServiceA.py`), Reporting
+(`python services\service_b\App_ServiceB.py`), and Gateway
+(`python gateway\App_Gateway.py`) in separate terminals. Start the frontend
+with `npm --prefix frontend run dev`. For a connected local frontend, copy
+`frontend\.env.example` to `frontend\.env.local` and set
+`VITE_USE_MOCK_API=false`.
+
+Run the checks:
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+npm --prefix frontend run build
+```
+
+## Deployment
+
+Docker is optional. Railway can build each service from its subdirectory using
+Railpack. Configure four Railway services (Gateway, Registry, Reporting, and
+Frontend), persistent volumes for the two SQLite services, and secret variables
+in Railway—not in source control.
+
+Follow the [Railway deployment and post-deployment JMeter guide](docs/railway-deployment-jmeter.md)
+for exact service roots, build/start commands, variables, health checks, data
+persistence, and a cautious staging test plan. The
+[local setup and API testing guide](docs/testing-deployment-guide.md) covers
+service and Postman checks.
+
+## Important limitations
+
+- Staff tokens are issued outside this project. The app does not provide a
+  login or token-issuing endpoint.
+- Walking directions require a valid server-side `ORS_API_KEY`; it must never
+  be added to a `VITE_` variable.
+- SQLite with one replica per service is suitable for this demonstration.
+  Review database, backup, and scaling needs before production traffic.
