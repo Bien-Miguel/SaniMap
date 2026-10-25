@@ -1,0 +1,11 @@
+{
+  "restroomId": 101,
+  "name": "Rizal Monument Comfort Room",
+  "latitude": 14.5826,
+  "longitude": 120.9787,
+  "operatingHours": "06:00-20:00",
+  "pwdAccessible": true,
+  "genderType": "Unisex",
+  "amenities": ["Handwashing Station", "Soap", "Bidet"],
+  "status": "open"
+}
