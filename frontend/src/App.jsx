@@ -147,6 +147,7 @@ function App() {
   const [token, setToken] = useState(
     () => sessionStorage.getItem("sanimap-admin-token") || ""
   );
+  const [staffAuthenticated, setStaffAuthenticated] = useState(false);
   const [tokenDraft, setTokenDraft] = useState("");
   const [adminTab, setAdminTab] = useState("facilities");
   const [adminReports, setAdminReports] = useState([]);
@@ -162,6 +163,10 @@ function App() {
     const path = paths[nextView] || "/";
     if (window.location.pathname !== path)
       window.history.pushState({}, "", path);
+    if (nextView !== "admin") {
+      setStaffAuthenticated(false);
+      setAdminReports([]);
+    }
     setView(nextView);
     setMobileMenu(false);
   };
@@ -171,13 +176,42 @@ function App() {
       const path = window.location.pathname;
       const nextView =
         path === "/admin" ? "admin" : path === "/map" ? "map" : "welcome";
+      if (nextView !== "admin") {
+        setStaffAuthenticated(false);
+        setAdminReports([]);
+      }
       setView(nextView);
-      if (nextView === "admin" && !MOCK_MODE && !token) setModal("admin-login");
     };
     window.addEventListener("popstate", handleHistoryChange);
-    if (view === "admin" && !MOCK_MODE && !token) setModal("admin-login");
     return () => window.removeEventListener("popstate", handleHistoryChange);
-  }, [token, view]);
+  }, []);
+
+  useEffect(() => {
+    if (view !== "admin" || staffAuthenticated) return undefined;
+
+    setModal("admin-login");
+    if (!token) return undefined;
+
+    let active = true;
+    api
+      .verifyStaff(token)
+      .then(() => {
+        if (!active) return;
+        setStaffAuthenticated(true);
+        setModal("");
+      })
+      .catch((err) => {
+        if (!active) return;
+        setToken("");
+        setTokenDraft("");
+        sessionStorage.removeItem("sanimap-admin-token");
+        setToast(err.message);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [view, token, staffAuthenticated]);
 
   const refreshRestrooms = useCallback(async () => {
     setLoading(true);
@@ -342,21 +376,19 @@ function selectFacility(id) {
   }
 
   async function enterAdmin() {
-    if (MOCK_MODE) {
-      navigateTo("admin");
-      setAdminTab("facilities");
-      setModal("");
-      return;
-    }
     if (!tokenDraft.trim()) {
       setToast("Paste a valid staff Bearer token to continue.");
       return;
     }
     try {
-      await api.health(tokenDraft.trim(), true);
-      setToken(tokenDraft.trim());
-      sessionStorage.setItem("sanimap-admin-token", tokenDraft.trim());
+      const staffToken = tokenDraft.trim();
+      await api.verifyStaff(staffToken);
+      setToken(staffToken);
+      setStaffAuthenticated(true);
+      setTokenDraft("");
+      sessionStorage.setItem("sanimap-admin-token", staffToken);
       navigateTo("admin");
+      setAdminTab("facilities");
       setModal("");
       setHealth("Connected to staff services.");
     } catch (err) {
@@ -366,8 +398,10 @@ function selectFacility(id) {
 
   // A 401 means the staff token expired or was rejected: sign out and ask again.
   const handleAuthError = useCallback((err) => {
-    if (MOCK_MODE || err?.status !== 401) return false;
+    if (err?.status !== 401) return false;
     setToken("");
+    setStaffAuthenticated(false);
+    setAdminReports([]);
     setTokenDraft("");
     sessionStorage.removeItem("sanimap-admin-token");
     setModal("admin-login");
@@ -392,11 +426,11 @@ function selectFacility(id) {
   );
 
   useEffect(() => {
-    if (view !== "admin" || (!MOCK_MODE && !token)) return undefined;
+    if (view !== "admin" || !staffAuthenticated) return undefined;
     loadAdminReports();
     const refreshTimer = window.setInterval(() => loadAdminReports(), 5000);
     return () => window.clearInterval(refreshTimer);
-  }, [view, token, loadAdminReports]);
+  }, [view, staffAuthenticated, loadAdminReports]);
 
   async function changeReportStatus(reportId, status) {
     try {
@@ -884,7 +918,7 @@ function selectFacility(id) {
             </div>
           </section>
         </main>
-      ) : (
+      ) : staffAuthenticated ? (
         <AdminDashboard
           restrooms={restrooms}
           reports={adminReports}
@@ -898,13 +932,21 @@ function selectFacility(id) {
           token={token}
           onLogout={() => {
             setToken("");
+            setStaffAuthenticated(false);
+            setAdminReports([]);
             sessionStorage.removeItem("sanimap-admin-token");
             navigateTo("welcome");
           }}
           onShowReceipt={() => setModal("report-lookup")}
           onReportStatus={changeReportStatus}
-          role={MOCK_MODE ? "admin" : roleFromToken(token)}
+          role={roleFromToken(token)}
         />
+      ) : (
+        <main className="welcome-page" aria-live="polite">
+          <p className="welcome-note">
+            Staff access is required to view the administration dashboard.
+          </p>
+        </main>
       )}
 
       {modal === "report" && selected && (
@@ -1128,7 +1170,14 @@ function selectFacility(id) {
         </Modal>
       )}
       {modal === "admin-login" && (
-        <Modal title="Staff access" onClose={() => setModal("")}>
+        <Modal
+          title="Staff access"
+          onClose={() => {
+            setTokenDraft("");
+            setModal("");
+            if (!staffAuthenticated) navigateTo("map");
+          }}
+        >
           <form
             className="form-body"
             onSubmit={(event) => {

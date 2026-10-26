@@ -13,7 +13,9 @@ npm --prefix frontend run dev
 ```
 
 Mock mode is enabled by default and uses Luneta seed facilities plus sample
-reports in browser `localStorage`. To use the live local Gateway, copy
+reports in browser `localStorage`. It does not grant staff access. The staff
+dashboard always requires a token accepted by the live Gateway, including
+when visitor data is mocked. To use the live local Gateway, copy
 `frontend\.env.example` to `frontend\.env.local`, set
 `VITE_USE_MOCK_API=false`, and restart Vite. Vite proxies `/api` to the
 Gateway, so the local browser requests remain same-origin.

@@ -266,6 +266,9 @@ export const api = {
         : { service: "API Gateway", status: "UP" };
     return request(all ? "/health/all" : "/health", { token });
   },
+  async verifyStaff(token) {
+    return request("/health/all", { token });
+  },
   async searchPlaces(query) {
     if (MOCK_MODE)
       return {
