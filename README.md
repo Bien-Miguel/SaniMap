@@ -52,7 +52,7 @@ Railpack. Configure four Railway services (Gateway, Registry, Reporting, and
 Frontend), persistent volumes for the two SQLite services, and secret variables
 in Railway—not in source control.
 
-Follow the [Railway deployment and post-deployment JMeter guide](docs/railway-deployment-jmeter.md)
+Follow [RAILWAY_DEPLOYMENT_README.md](RAILWAY_DEPLOYMENT_README.md)
 for exact service roots, build/start commands, variables, health checks, data
 persistence, and a cautious staging test plan. The
 [local setup and API testing guide](docs/testing-deployment-guide.md) covers

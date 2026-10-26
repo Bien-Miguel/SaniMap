@@ -45,5 +45,5 @@ At build time, set `VITE_USE_MOCK_API=false` and
 `VITE_` value into public browser assets; never put keys, signing secrets, or
 staff tokens in them.
 
-See the [Railway deployment and JMeter guide](../docs/railway-deployment-jmeter.md)
+See the [Railway deployment README](../RAILWAY_DEPLOYMENT_README.md)
 for the full setup and verification steps.

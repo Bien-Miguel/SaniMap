@@ -1,69 +1,111 @@
-# Railway deployment and post-deployment JMeter guide
+# SaniMap Railway Deployment README
 
-This guide deploys SaniMap as four Railway services from one GitHub repository.
-Docker is **not required**: Railway can use Railpack to install Python/Node
-dependencies and build each service. Docker is an optional alternative if you
-later need custom operating-system packages or a fully controlled image.
+This is the deployment runbook for SaniMap. It covers which project files
+belong in GitHub, which local files must stay private, Railway service setup,
+environment variables, persistent databases, deployment verification, and a
+safe post-deployment JMeter plan.
+
+Railway is compatible with this project. **Docker is not required**: Railway
+can build the Python services and React/Vite frontend with Railpack. Use
+Docker only if you later need custom operating-system packages or a
+fully-controlled container image.
 
 Deploy to a Railway staging environment first. Do not use a load test to
 validate an unreviewed production deployment.
 
-## 1. Files to commit and files to keep local
+## 1. Files to upload and files to keep local
 
-The following are application source, runtime manifests, tests, or useful
-project documentation and should be in the feature branch:
+Commit the application source and the runtime manifests needed to build each
+service. The repository is a monorepo; Railway's **Root Directory** setting
+isolates each service's build context.
 
-- `gateway/App_Gateway.py` and `gateway/requirements.txt`
-- `services/service_a/` and `services/service_b/`, including each service's
-  `requirements.txt`
-- `frontend/`, `frontend/package.json`, `frontend/package-lock.json`, and
-  `frontend/server.mjs`
-- `requirements.txt`, `tests/`, and `tools/`
-- `.env.example`, `.gitignore`, `README.md`, `SaniMap.postman_collection.json`,
-  and the relevant `docs/`
+| Railway service | Required source and dependency files |
+| --- | --- |
+| Registry | `services/service_a/App_ServiceA.py`, `services/service_a/requirements.txt` |
+| Reporting | `services/service_b/App_ServiceB.py`, `services/service_b/requirements.txt` |
+| Gateway | `gateway/App_Gateway.py`, `gateway/requirements.txt` |
+| Frontend | `frontend/package.json`, `frontend/package-lock.json`, `frontend/index.html`, `frontend/vite.config.js`, `frontend/server.mjs`, and `frontend/src/` |
+
+Also keep the root `requirements.txt` for local development and CI, the tests
+and seed/token utility scripts, `.env.example` templates, `.gitignore`, the
+GitHub Actions workflow, the Postman **collection**, and the project
+documentation. The Railway build uses each service's own dependency manifest;
+it does not need the developer's installed dependencies.
+
+GitHub receives files that are committed to the selected branch. Railway uses
+the configured service root for each build; the entire repository is not
+copied into every service image. README and test files are useful in GitHub
+but are not runtime dependencies of the deployed services.
+
+The repository also contains a pre-existing tracked legacy project directory,
+`SaniMap_group2_Lab6-main/`. It is outside all four Railway service roots, so
+it is not part of these service build contexts. `.gitignore` cannot hide files
+that are already tracked; avoid staging unrelated edits to this directory.
 
 Do **not** commit:
 
-- `.env`, `frontend/.env.local`, or any other real environment file
-- API keys, JWT signing secrets, temporary staff tokens, or exported
-  Postman environments containing credentials
-- `.venv/`, `node_modules/`, `frontend/dist/`, Python caches, local SQLite
-  databases, test/coverage output, or JMeter result files
+- `.env`, `frontend/.env.local`, or any other real environment file. Commit
+  only the blank/sample `.env.example` templates.
+- `ORS_API_KEY`, `JWT_SECRET`, staff bearer tokens, passwords, or exported
+  Postman environments containing secrets.
+- Python virtual environments (`venv/`, `.venv/`), `__pycache__/`, `.pyc`
+  files, `node_modules/`, or the generated `frontend/dist/` build output.
+- Local SQLite databases (`*.db`, `*.sqlite`, `*.sqlite3`) and SQLite
+  `-wal`/`-shm` sidecars.
+- Test/coverage output, logs, JMeter result files, and local JMeter reports.
+- Editor/OS-specific files such as `.vscode/`, `.DS_Store`, and `Thumbs.db`.
 
-The root `.gitignore` excludes these local files. Before staging, review
-`git status --short` and `git diff --cached --name-only`. If a credential was
-ever committed or pushed, removing it in a later commit does not make it safe:
-revoke/rotate it with its issuer.
-
-## 2. Create and push a feature branch
-
-From the repository root, create a branch rather than committing to `main`:
+The root and frontend `.gitignore` files exclude these local artifacts while
+allowing the safe `.env.example` templates. Verify ignore behavior before
+committing:
 
 ```powershell
-git switch -c feature/railway-deployment
+git check-ignore -v .env frontend/.env.local frontend/node_modules frontend/dist services/service_a/registry.db
+git status --short
+git diff --cached --name-only
+```
+
+`.gitignore` does not untrack a file already committed. If a real credential
+was ever committed or pushed, revoke/rotate it with its issuer; deleting it
+later does not remove it from Git history.
+
+## 2. Select the deployment branch and run local checks
+
+Use the reviewed feature branch for staging. Do not deploy `main` until the
+feature branch is reviewed and you explicitly choose to merge it.
+
+```powershell
+git switch feature/railway-deployment
 git status --short
 ```
 
-Run the local checks before staging:
+Install dependencies locally and run the checks from the repository root:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 npm --prefix frontend ci
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 npm --prefix frontend run build
 ```
 
-Review the exact changes, then commit and push only the feature branch:
+Review the exact branch and staged file list before pushing:
 
 ```powershell
+git branch --show-current
+git status --short
 git add -A
 git diff --cached --check
 git diff --cached --name-only
-git commit -m "Prepare SaniMap for Railway deployment"
+git commit -m "Add Railway deployment README"
 git push -u origin feature/railway-deployment
 ```
 
-Open a pull request against the repository's agreed integration branch. Do not
-merge or push directly to `main` before the review and deployment checks pass.
+Before committing, confirm the branch name is `feature/railway-deployment` and
+the staged list contains only intended source and documentation. Do not add
+real environment files, databases, generated dependency folders, or unrelated
+changes. Open a pull request against the agreed integration branch; do not
+merge or push directly to `main` before review and deployment checks pass.
 
 ## 3. Create the Railway project and services
 
@@ -97,11 +139,17 @@ merge or push directly to `main` before the review and deployment checks pass.
    client-side routes such as `/map` and `/admin`, and listens on Railway's
    `PORT`.
 
-## 4. Configure service variables and private networking
+## 4. Configure Railway environment variables and private networking
 
-Add variables in Railway's service **Variables** panels, never in GitHub.
-Railway variable references use `${{ServiceName.VARIABLE}}`; private
-service-to-service traffic uses the private DNS domain and HTTP.
+Add variables in the **Variables** panel for the specific Railway service
+below, never in GitHub, a committed `.env`, or a frontend `VITE_` secret.
+Railway variable references use `${{ServiceName.VARIABLE}}`; backend
+service-to-service traffic uses the private DNS domain and HTTP. Railway
+provides `PORT` for each service; do not hard-code it or set a different port.
+
+Keep the root `.env` for local development only. `.env.example` is a
+non-secret template and documents local defaults; it is not automatically
+loaded by Railway. Set production variables in Railway's dashboard.
 
 ### Registry
 
@@ -134,8 +182,10 @@ ORS_API_KEY=<your OpenRouteService key, optional>
 
 Generate a fresh production JWT secret using a trusted password generator or
 `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Do not reuse
-the local development secret. The ORS key is required only for directions.
-Keep both secrets exclusively in Railway's Gateway variables.
+the local development secret. The ORS key is optional and is needed only for
+walking directions. Keep both values exclusively in Railway's Gateway
+variables. If you set or rotate `JWT_SECRET`, issue new staff tokens that use
+that production secret, issuer, and audience.
 
 ### Frontend
 
@@ -146,14 +196,14 @@ VITE_API_BASE_URL=https://${{Gateway.RAILWAY_PUBLIC_DOMAIN}}
 
 Vite embeds `VITE_` values in public browser code at build time; the Gateway
 URL is public configuration, not a secret. Never put `JWT_SECRET`,
-`ORS_API_KEY`, or staff tokens in a `VITE_` variable. Redeploy the Frontend
-after changing either build variable.
+`ORS_API_KEY`, database URLs with credentials, or staff tokens in a `VITE_`
+variable. Redeploy the Frontend after changing either build variable.
 
 The `SANIMAP_CORS_ORIGINS` value must exactly match the Frontend's HTTPS origin
 (no trailing slash). If you use a custom domain, update this variable to that
 origin and redeploy the Gateway.
 
-## 5. Deploy and verify the service graph
+## 5. Set up persistent databases, deploy, and verify
 
 1. Deploy Registry and Reporting. Confirm each Railway deployment is healthy
    at `/health`.

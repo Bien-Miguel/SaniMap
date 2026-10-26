@@ -14,7 +14,7 @@ Gateway-only health check as proof that both backend services are healthy.
 | Health monitoring | `GET /health` checks only the gateway process. Staff-only `GET /health/all` now checks both backend services and returns HTTP 503 if either is down. |
 | Coverage analytics | Not implemented. There is no coverage endpoint or service that identifies geographic gaps or repeated unresolved reports. |
 | Report resolution | Staff can list reports across restrooms and update report status through the Gateway; check the current route table and Postman collection for role requirements. |
-| Automation/deployment | The Postman collection is `SaniMap.postman_collection.json` at the repository root. Railway setup and post-deployment JMeter instructions are in [the Railway guide](railway-deployment-jmeter.md). CI still needs to be configured. |
+| Automation/deployment | The Postman collection is `SaniMap.postman_collection.json` at the repository root. Railway setup and post-deployment JMeter instructions are in the [Railway deployment README](../RAILWAY_DEPLOYMENT_README.md). CI is configured in `.github/workflows/ci.yml`. |
 
 ## 2. Prerequisites
 
@@ -283,7 +283,7 @@ Recommended implementation sequence:
 
 Railway service configuration, root directories, build/start commands, runtime
 variables, volumes, CORS, healthchecks, Postman smoke tests, and a post-deploy
-JMeter plan are documented in [Railway deployment and JMeter](railway-deployment-jmeter.md).
+JMeter plan are documented in the [Railway deployment README](../RAILWAY_DEPLOYMENT_README.md).
 Use a feature branch and staging environment. A GitHub Actions CI workflow is
 not included yet; add one before making successful automated checks a required
 branch-protection rule.
