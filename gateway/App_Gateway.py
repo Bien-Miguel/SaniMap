@@ -279,7 +279,10 @@ def enforce_access_policy():
         )
     except jwt.ExpiredSignatureError:
         return auth_error("UNAUTHORIZED", "Token has expired.", 401)
-    except jwt.InvalidTokenError:
+    except jwt.InvalidTokenError as error:
+        app.logger.warning(
+            "JWT verification failed: %s", type(error).__name__
+        )
         return auth_error("UNAUTHORIZED", "Invalid token.", 401)
 
     # The role comes only from the verified token, never from client headers.

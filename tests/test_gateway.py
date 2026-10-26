@@ -331,6 +331,20 @@ class GatewayAuthorizationTests(GatewayTestCase):
         self.assertEqual(response.status_code, 403)
         self.mock_request.assert_not_called()
 
+    def test_invalid_signature_logs_failure_type_without_changing_response(self):
+        invalid_signature = bearer(make_token(secret="different-test-secret"))
+
+        with self.assertLogs("gateway.App_Gateway", level="WARNING") as logs:
+            response = self.client.get(
+                "/auth/verify",
+                headers=invalid_signature,
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.get_json()["message"], "Invalid token.")
+        self.assertIn("InvalidSignatureError", logs.output[0])
+        self.assertNotIn("different-test-secret", logs.output[0])
+
     def test_health_all_returns_503_when_a_backend_is_down(self):
         healthy = Mock(status_code=200)
         healthy.json.return_value = {"service": "Registry", "status": "UP"}
