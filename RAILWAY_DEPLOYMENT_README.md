@@ -180,12 +180,28 @@ SANIMAP_CORS_ORIGINS=https://${{Frontend.RAILWAY_PUBLIC_DOMAIN}}
 ORS_API_KEY=<your OpenRouteService key, optional>
 ```
 
-Generate a fresh production JWT secret using a trusted password generator or
-`python -c "import secrets; print(secrets.token_urlsafe(48))"`. Do not reuse
-the local development secret. The ORS key is optional and is needed only for
-walking directions. Keep both values exclusively in Railway's Gateway
-variables. If you set or rotate `JWT_SECRET`, issue new staff tokens that use
-that production secret, issuer, and audience.
+Generate a fresh production JWT secret in PowerShell; this does not require
+Python to be installed:
+
+```powershell
+$bytes = New-Object byte[] 48
+$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+  $rng.GetBytes($bytes)
+  [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+finally {
+  $rng.Dispose()
+}
+```
+
+Copy the single generated line directly into the Gateway's Railway
+`JWT_SECRET` variable. Do not post it in chat, save it in the repository, or
+reuse the local development secret. If Python is installed, the equivalent is
+`py -c "import secrets; print(secrets.token_urlsafe(48))"`. The ORS key is
+optional and is needed only for walking directions. Keep both values
+exclusively in Railway's Gateway variables. If you set or rotate `JWT_SECRET`,
+issue new staff tokens that use that production secret, issuer, and audience.
 
 ### Frontend
 
