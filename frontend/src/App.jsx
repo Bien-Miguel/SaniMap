@@ -93,7 +93,13 @@ function MapViewport({ selected, route }) {
   return null;
 }
 
-function Modal({ title, onClose, children, wide = false }) {
+function Modal({
+  title,
+  onClose,
+  children,
+  wide = false,
+  closeOnBackdrop = true,
+}) {
   useEffect(() => {
     const closeOnEscape = (event) => event.key === "Escape" && onClose();
     window.addEventListener("keydown", closeOnEscape);
@@ -102,7 +108,11 @@ function Modal({ title, onClose, children, wide = false }) {
   return (
     <div
       className="modal-backdrop"
-      onMouseDown={(event) => event.target === event.currentTarget && onClose()}
+      onMouseDown={(event) =>
+        closeOnBackdrop &&
+        event.target === event.currentTarget &&
+        onClose()
+      }
     >
       <section
         className={`modal ${wide ? "modal-wide" : ""}`}
@@ -1172,6 +1182,7 @@ function selectFacility(id) {
       {modal === "admin-login" && (
         <Modal
           title="Staff access"
+          closeOnBackdrop={false}
           onClose={() => {
             setTokenDraft("");
             setModal("");

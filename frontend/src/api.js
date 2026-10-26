@@ -133,13 +133,35 @@ async function request(path, { method = "GET", body, token } = {}) {
     error.status = 0;
     throw error;
   }
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
+  const contentType = response.headers.get("content-type") || "";
+  if (!/application\/(?:[\w.-]+\+)?json\b/i.test(contentType)) {
     const error = new Error(
-      payload.message || payload.error || `Request failed (${response.status})`
+      "The API returned a non-JSON response. Check that VITE_API_BASE_URL points to the Gateway."
+    );
+    error.status = response.ok ? 502 : response.status;
+    error.code = "INVALID_API_RESPONSE";
+    throw error;
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    const error = new Error("The API returned invalid JSON.");
+    error.status = response.ok ? 502 : response.status;
+    error.code = "INVALID_API_RESPONSE";
+    throw error;
+  }
+  if (!response.ok) {
+    const errorPayload =
+      payload && typeof payload === "object" ? payload : {};
+    const error = new Error(
+      errorPayload.message ||
+        errorPayload.error ||
+        `Request failed (${response.status})`
     );
     error.status = response.status;
-    error.code = payload.error;
+    error.code = errorPayload.error;
     throw error;
   }
   return payload;
@@ -267,7 +289,14 @@ export const api = {
     return request(all ? "/health/all" : "/health", { token });
   },
   async verifyStaff(token) {
-    return request("/health/all", { token });
+    const result = await request("/auth/verify", { token });
+    if (!["admin", "park_manager"].includes(result.role)) {
+      const error = new Error("The Gateway did not verify a staff role.");
+      error.status = 403;
+      error.code = "INVALID_STAFF_ROLE";
+      throw error;
+    }
+    return result;
   },
   async searchPlaces(query) {
     if (MOCK_MODE)

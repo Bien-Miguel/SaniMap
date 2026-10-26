@@ -30,8 +30,10 @@ frontend.
 
 Public routes allow facility browsing, report submission, and report lookup.
 Staff routes require an externally issued JWT with an `admin` or
-`park_manager` role. This project does not implement staff login or token
-issuance. Facility creation and facility status updates require `admin`;
+`park_manager` role. The frontend validates staff tokens through the protected
+Gateway `/auth/verify` endpoint; the Gateway is the authority for token
+signature and role validation. This project does not implement staff login or
+token issuance. Facility creation and facility status updates require `admin`;
 report history, aggregate health, and report-status updates allow both staff
 roles.
 
@@ -45,7 +47,9 @@ At build time, set `VITE_USE_MOCK_API=false` and
 `VITE_API_BASE_URL=https://<gateway-domain>`. Configure the Gateway's
 `SANIMAP_CORS_ORIGINS` to the exact HTTPS frontend origin. Vite embeds every
 `VITE_` value into public browser assets; never put keys, signing secrets, or
-staff tokens in them.
+staff tokens in them. If the API URL is missing or returns the frontend HTML
+instead of JSON, API calls fail closed rather than treating that response as
+successful authentication.
 
 See the [Railway deployment README](../RAILWAY_DEPLOYMENT_README.md)
 for the full setup and verification steps.

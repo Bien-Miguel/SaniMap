@@ -314,6 +314,23 @@ class GatewayAuthorizationTests(GatewayTestCase):
         self.assertEqual(self.client.get("/health").status_code, 200)
         self.assertEqual(self.client.get("/health/all").status_code, 401)
 
+    def test_auth_verify_requires_staff_and_returns_gateway_verified_role(self):
+        self.assertEqual(self.client.get("/auth/verify").status_code, 401)
+
+        response = self.client.get("/auth/verify", headers=self.manager)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"role": "park_manager"})
+        self.mock_request.assert_not_called()
+
+    def test_auth_verify_rejects_non_staff_roles(self):
+        visitor = bearer(make_token("visitor"))
+
+        response = self.client.get("/auth/verify", headers=visitor)
+
+        self.assertEqual(response.status_code, 403)
+        self.mock_request.assert_not_called()
+
     def test_health_all_returns_503_when_a_backend_is_down(self):
         healthy = Mock(status_code=200)
         healthy.json.return_value = {"service": "Registry", "status": "UP"}

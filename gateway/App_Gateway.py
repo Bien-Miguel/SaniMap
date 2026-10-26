@@ -10,7 +10,7 @@ from collections import OrderedDict, deque
 import jwt
 import requests
 from dotenv import load_dotenv
-from flask import Flask, request, Response, jsonify
+from flask import Flask, g, request, Response, jsonify
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 # Loads the local, git-ignored .env file (JWT_SECRET, ORS_API_KEY, ...).
@@ -107,6 +107,7 @@ STAFF = ("admin", "park_manager")
 
 ROUTE_POLICY = {
     ("GET", "/health"): PUBLIC,
+    ("GET", "/auth/verify"): STAFF,
     ("GET", "/directions"): PUBLIC,
     ("GET", "/geocode"): PUBLIC,
     ("GET", "/reverse-geocode"): PUBLIC,
@@ -286,6 +287,7 @@ def enforce_access_policy():
         return auth_error(
             "FORBIDDEN", "You do not have permission to perform this action.", 403
         )
+    g.authenticated_role = claims["role"]
     return None
 
 
@@ -805,6 +807,11 @@ def directions():
 @app.route("/health", methods=["GET"])
 def gateway_health():
     return jsonify({"service": "API Gateway", "status": "UP"}), 200
+
+
+@app.route("/auth/verify", methods=["GET"])
+def verify_staff_token():
+    return jsonify({"role": g.authenticated_role}), 200
 
 
 @app.route("/health/all", methods=["GET"])
