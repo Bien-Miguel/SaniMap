@@ -133,14 +133,18 @@ function Modal({
 }
 
 function App() {
-  const [restrooms, setRestrooms] = useState([]);
+  const [initialFacilities] = useState(() => api.getCachedRestrooms());
+  const [restrooms, setRestrooms] = useState(initialFacilities);
+  const [showingCachedFacilities, setShowingCachedFacilities] = useState(
+    initialFacilities.length > 0
+  );
   const [selectedId, setSelectedId] = useState(null);
   const [view, setView] = useState(() => {
     if (window.location.pathname === "/admin") return "admin";
     if (window.location.pathname === "/map") return "map";
     return "welcome";
   });
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(initialFacilities.length === 0);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
@@ -165,6 +169,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
   const mapRef = useRef(null);
+  const hasFacilitiesRef = useRef(initialFacilities.length > 0);
   const reportRequestId = useRef(0);
   const reportSubmission = useRef(null);
   const routeRequestFor = useRef(null);
@@ -225,9 +230,13 @@ function App() {
   }, [view, token, staffAuthenticated]);
 
   const refreshRestrooms = useCallback(async () => {
-    setLoading(true);
+    if (!hasFacilitiesRef.current) setLoading(true);
+    setError("");
     try {
-      setRestrooms(await api.listRestrooms());
+      const loadedRestrooms = await api.listRestrooms();
+      setRestrooms(loadedRestrooms);
+      hasFacilitiesRef.current = loadedRestrooms.length > 0;
+      setShowingCachedFacilities(false);
       setError("");
     } catch (err) {
       setError(err.message);
@@ -685,22 +694,30 @@ function selectFacility(id) {
               </button>
             </div>
             <div className="facility-list">
-              {loading && (
+              {loading && restrooms.length === 0 && (
                 <div className="empty-state">
                   <span className="spinner" />
                   Waking the server… The first load after inactivity can take over a minute; we’ll retry automatically.
                 </div>
               )}
-              {!loading && error && (
+              {showingCachedFacilities && !error && (
+                <div className="empty-state">
+                  Showing saved facilities while live data refreshes. Status may
+                  have changed.
+                </div>
+              )}
+              {error && (
                 <div className="error-card">
                   <CircleAlert size={19} />
-                  <span>{error}</span>
+                  <span>
+                    {restrooms.length > 0 && showingCachedFacilities
+                      ? `Showing saved facilities; status may have changed. ${error}`
+                      : error}
+                  </span>
                   <button onClick={refreshRestrooms}>Retry</button>
                 </div>
               )}
-              {!loading &&
-                !error &&
-                filteredRestrooms.map((item) => (
+              {filteredRestrooms.map((item) => (
                   <button
                     className={`facility-card ${
                       selectedId === item.restroomId ? "selected" : ""

@@ -62,7 +62,16 @@ retries temporary failures for roughly 87 seconds before showing an error. The p
 `/health` endpoint checks only the Gateway; the Registry's own `/health`
 endpoint checks the Registry. A request to Gateway `/restrooms` exercises both
 services. Do not use frequent health pings as a substitute for an always-on
-plan.
+plan. After a successful load, the browser also saves a copy of the facility
+list and displays it immediately on the next visit while it refreshes live data.
+Saved statuses can be out of date until that refresh succeeds.
+
+To wake the Free Gateway and Registry shortly before a demo, open
+`https://<gateway-domain>/restrooms` and wait for the JSON facility list. This
+only wakes them temporarily; they can spin down again after 15 minutes without
+traffic. For consistently fast loads, upgrade both backend web services to
+paid instances so they stay running. The frontend static site does not need to
+be kept warm.
 
 The Registry currently uses SQLite. On Render, a local SQLite database on a
 free web service is ephemeral and can be lost when the service spins down,

@@ -125,6 +125,12 @@ function persist() {
   localStorage.setItem("sanimap-reports", JSON.stringify(reports));
 }
 
+function getCachedRestrooms() {
+  if (MOCK_MODE) return [];
+  const cached = stored("facility-cache", []);
+  return Array.isArray(cached) ? cached : [];
+}
+
 export function roleFromToken(token) {
   // Display only: decides which buttons to show. The Gateway still verifies the
   // signature and role on every request, so this grants no access by itself.
@@ -226,13 +232,26 @@ async function requestWithRetry(
 }
 
 export const api = {
+  getCachedRestrooms,
   async listRestrooms() {
     if (MOCK_MODE) return [...restrooms];
-    return requestWithRetry(
+    const loadedRestrooms = await requestWithRetry(
       "/restrooms",
       {},
       FACILITY_RETRY_DELAYS_MS
     );
+    if (!Array.isArray(loadedRestrooms)) {
+      throw new Error("The server returned an invalid facility list.");
+    }
+    try {
+      localStorage.setItem(
+        "sanimap-facility-cache",
+        JSON.stringify(loadedRestrooms)
+      );
+    } catch (error) {
+      console.warn("Could not save the facility list for offline display.", error);
+    }
+    return loadedRestrooms;
   },
   async createRestroom(data, token) {
     if (MOCK_MODE) {

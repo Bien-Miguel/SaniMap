@@ -64,6 +64,11 @@ created at runtime (for example, through the admin dashboard) can disappear
 after a spin-down, restart, or redeploy. The canonical five seed facilities
 will be inserted again automatically when the Registry starts.
 
+To wake a spun-down Registry before a demo, request its `/restrooms` endpoint
+directly or through the public Gateway. This is temporary; the service can spin
+down again after 15 minutes without inbound traffic. Consistently low startup
+latency requires running the Registry and Gateway on paid Render instances.
+
 ## Example
 
 ```powershell
