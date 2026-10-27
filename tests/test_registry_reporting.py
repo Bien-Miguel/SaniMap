@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -287,6 +288,53 @@ class ReportingServiceTests(unittest.TestCase):
         self.assertEqual(persisted.status_code, 200)
         self.assertEqual(persisted.get_json()["description"], "Broken tap")
 
+    def test_create_report_idempotency_key_prevents_duplicates(self):
+        payload = {
+            "restroomId": 1,
+            "reportType": "OTHER",
+            "description": "Water is unavailable",
+        }
+        headers = {"Idempotency-Key": "report-attempt-123"}
+        with patch.object(
+            reporting.requests,
+            "get",
+            return_value=self.registry_response,
+        ) as registry_get:
+            first = self.client.post("/feedback", json=payload, headers=headers)
+            retry = self.client.post("/feedback", json=payload, headers=headers)
+            conflict = self.client.post(
+                "/feedback",
+                json={**payload, "description": "Different issue"},
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(retry.status_code, 201)
+        self.assertEqual(
+            retry.get_json()["reportId"], first.get_json()["reportId"]
+        )
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(conflict.get_json()["error"], "IDEMPOTENCY_CONFLICT")
+        registry_get.assert_called_once()
+
+        with reporting.app.test_request_context():
+            with reporting.get_connection() as connection:
+                count = connection.execute(
+                    "SELECT COUNT(*) FROM reports WHERE idempotency_key = ?",
+                    ("report-attempt-123",),
+                ).fetchone()[0]
+        self.assertEqual(count, 1)
+
+    def test_report_idempotency_key_is_validated(self):
+        response = self.client.post(
+            "/feedback",
+            json={"restroomId": 1, "reportType": "OTHER"},
+            headers={"Idempotency-Key": "invalid key"},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["field"], "Idempotency-Key")
+
     def test_invalid_report_type_and_malformed_payload_are_rejected(self):
         invalid_type = self.client.post(
             "/feedback",
@@ -354,6 +402,42 @@ class ReportingServiceTests(unittest.TestCase):
                     "SELECT restroom_id FROM reports WHERE report_id = 501"
                 ).fetchone()
         self.assertEqual(row["restroom_id"], 1)
+
+    def test_existing_database_is_migrated_for_idempotency(self):
+        legacy_path = os.path.join(self.temp_dir.name, "legacy-reporting.db")
+        connection = sqlite3.connect(legacy_path)
+        connection.execute(
+            """
+            CREATE TABLE reports (
+                report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                restroom_id INTEGER NOT NULL,
+                restroom_name TEXT NOT NULL,
+                report_type TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'PENDING'
+                    CHECK (status IN ('PENDING', 'RESOLVED', 'REJECTED')),
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        reporting.initialize_database(legacy_path)
+
+        connection = sqlite3.connect(legacy_path)
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(reports)").fetchall()
+        }
+        indexes = {
+            row[1]
+            for row in connection.execute("PRAGMA index_list(reports)").fetchall()
+        }
+        connection.close()
+        self.assertIn("idempotency_key", columns)
+        self.assertIn("request_hash", columns)
+        self.assertIn("idx_reports_idempotency_key", indexes)
 
 
 if __name__ == "__main__":

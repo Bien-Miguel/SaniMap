@@ -1,6 +1,9 @@
 """SaniMap Reporting and Feedback Service."""
 
+import hashlib
+import json
 import os
+import re
 import sqlite3
 import xml.etree.ElementTree as ET
 from contextlib import contextmanager
@@ -57,6 +60,7 @@ def initialize_database(database_path=None):
     path = database_path or app.config["DATABASE"]
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=10)
+    connection.row_factory = sqlite3.Row
     try:
         connection.execute(
             """
@@ -68,14 +72,31 @@ def initialize_database(database_path=None):
                 description TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'PENDING'
                     CHECK (status IN ('PENDING', 'RESOLVED', 'REJECTED')),
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                idempotency_key TEXT,
+                request_hash TEXT
             )
             """
         )
+        report_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(reports)").fetchall()
+        }
+        if "idempotency_key" not in report_columns:
+            connection.execute("ALTER TABLE reports ADD COLUMN idempotency_key TEXT")
+        if "request_hash" not in report_columns:
+            connection.execute("ALTER TABLE reports ADD COLUMN request_hash TEXT")
         connection.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_reports_restroom_id
             ON reports(restroom_id)
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_idempotency_key
+            ON reports(idempotency_key)
+            WHERE idempotency_key IS NOT NULL
             """
         )
         connection.execute(
@@ -414,6 +435,43 @@ def create_feedback():
             "description",
         )
 
+    idempotency_key = request.headers.get("Idempotency-Key")
+    request_hash = None
+    if idempotency_key:
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", idempotency_key):
+            return render_payload(
+                make_error(
+                    "VALIDATION_ERROR",
+                    "Idempotency-Key must be 1 to 128 safe characters.",
+                    field="Idempotency-Key",
+                ),
+                400,
+                "error",
+            )
+        request_hash = hashlib.sha256(
+            json.dumps(
+                [restroom_id, report_type, description],
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        with get_connection() as connection:
+            existing = connection.execute(
+                "SELECT * FROM reports WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        if existing:
+            if existing["request_hash"] != request_hash:
+                return render_payload(
+                    make_error(
+                        "IDEMPOTENCY_CONFLICT",
+                        "This idempotency key was already used for a different report.",
+                    ),
+                    409,
+                    "error",
+                )
+            return render_payload(_row_to_report(existing), 201, "report")
+
     restroom, lookup_error = lookup_restroom(restroom_id)
     if lookup_error == 404:
         return render_payload(
@@ -460,8 +518,8 @@ def create_feedback():
             """
             INSERT INTO reports (
                 restroom_id, restroom_name, report_type,
-                description, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                description, status, created_at, idempotency_key, request_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 restroom_id,
@@ -470,6 +528,8 @@ def create_feedback():
                 description,
                 "PENDING",
                 created_at,
+                idempotency_key,
+                request_hash,
             ),
         )
         row = connection.execute(

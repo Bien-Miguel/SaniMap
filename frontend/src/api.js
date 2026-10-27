@@ -139,13 +139,17 @@ export function roleFromToken(token) {
   }
 }
 
-async function request(path, { method = "GET", body, token } = {}) {
+async function request(
+  path,
+  { method = "GET", body, token, idempotencyKey } = {}
+) {
   let response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method,
       headers: {
         Accept: "application/json",
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
         ...(body ? { "Content-Type": "application/json" } : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
@@ -204,7 +208,9 @@ async function requestWithRetry(path, options = {}) {
       return await request(path, options);
     } catch (error) {
       const delay = RETRY_DELAYS_MS[attempt];
-      if (method !== "GET" || !error.retryable || delay === undefined) {
+      const canRetry =
+        method === "GET" || (method === "POST" && Boolean(options.idempotencyKey));
+      if (!canRetry || !error.retryable || delay === undefined) {
         throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, delay));
@@ -244,7 +250,7 @@ export const api = {
       token,
     });
   },
-  async createReport(data) {
+  async createReport(data, idempotencyKey) {
     if (MOCK_MODE) {
       const restroom = restrooms.find(
         (item) => item.restroomId === Number(data.restroomId)
@@ -261,7 +267,11 @@ export const api = {
       persist();
       return report;
     }
-    return request("/feedback", { method: "POST", body: data });
+    return requestWithRetry("/feedback", {
+      method: "POST",
+      body: data,
+      idempotencyKey,
+    });
   },
   async getReport(id) {
     if (MOCK_MODE) {

@@ -65,6 +65,19 @@ class GatewayTestCase(unittest.TestCase):
 
 
 class GatewayForwardingTests(GatewayTestCase):
+    def test_feedback_idempotency_key_is_forwarded_to_reporting(self):
+        response = self.client.post(
+            "/feedback",
+            json={"restroomId": 1, "reportType": "OTHER"},
+            headers={"Idempotency-Key": "report-attempt-123"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.mock_request.call_args.kwargs["headers"]["Idempotency-Key"],
+            "report-attempt-123",
+        )
+
     def test_put_status_reaches_registry_with_body_and_content_type(self):
         response = self.client.put(
             "/restrooms/1/status",
@@ -446,6 +459,9 @@ class GatewayCorsTests(GatewayTestCase):
         self.assertIn("GET", response.headers["Access-Control-Allow-Methods"])
         self.assertIn(
             "Authorization", response.headers["Access-Control-Allow-Headers"]
+        )
+        self.assertIn(
+            "Idempotency-Key", response.headers["Access-Control-Allow-Headers"]
         )
 
     def test_unconfigured_origin_does_not_receive_cors_permission(self):

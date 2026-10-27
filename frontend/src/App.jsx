@@ -166,6 +166,7 @@ function App() {
   const [mobileMenu, setMobileMenu] = useState(false);
   const mapRef = useRef(null);
   const reportRequestId = useRef(0);
+  const reportSubmission = useRef(null);
   const routeRequestFor = useRef(null);
 
   const navigateTo = (nextView) => {
@@ -359,13 +360,25 @@ function selectFacility(id) {
   async function submitReport(event) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
+    const report = {
+      restroomId: Number(form.get("restroomId")),
+      reportType: form.get("reportType"),
+      description: form.get("description").trim(),
+    };
+    const fingerprint = JSON.stringify(report);
+    if (reportSubmission.current?.fingerprint !== fingerprint) {
+      reportSubmission.current = {
+        fingerprint,
+        idempotencyKey: crypto.randomUUID(),
+      };
+    }
     setBusy(true);
     try {
-      const receipt = await api.createReport({
-        restroomId: Number(form.get("restroomId")),
-        reportType: form.get("reportType"),
-        description: form.get("description").trim(),
-      });
+      const receipt = await api.createReport(
+        report,
+        reportSubmission.current.idempotencyKey
+      );
+      reportSubmission.current = null;
       setReportReceipt(receipt);
       setAdminReports((currentReports) => [receipt, ...currentReports]);
       setModal("receipt");
@@ -960,7 +973,13 @@ function selectFacility(id) {
       )}
 
       {modal === "report" && selected && (
-        <Modal title="Report a facility issue" onClose={() => setModal("")}>
+        <Modal
+          title="Report a facility issue"
+          onClose={() => {
+            reportSubmission.current = null;
+            setModal("");
+          }}
+        >
           <form className="form-body" onSubmit={submitReport}>
             <div className="form-context">
               <span className="facility-icon status-open">
@@ -1006,7 +1025,10 @@ function selectFacility(id) {
               <button
                 type="button"
                 className="button-secondary"
-                onClick={() => setModal("")}
+                onClick={() => {
+                  reportSubmission.current = null;
+                  setModal("");
+                }}
               >
                 Cancel
               </button>

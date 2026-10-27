@@ -52,7 +52,9 @@ staff tokens in them. If the API URL is missing or returns the frontend HTML
 instead of JSON, API calls fail closed rather than treating that response as
 successful authentication. Safe GET requests retry temporary network failures
 and 502/503/504 responses with bounded backoff; mutations are never retried
-automatically.
+automatically except feedback submissions carrying a request idempotency key.
+The Reporting Service stores that key with the report so a retry returns the
+original receipt rather than creating a duplicate.
 
 Render free web services spin down after inactivity and can take about a minute
 to start again. The frontend keeps the facility list loading while its first

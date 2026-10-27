@@ -306,6 +306,8 @@ def forward_request(base_url, path):
         forward_headers["Content-Type"] = request.headers["Content-Type"]
     if "Accept" in request.headers:
         forward_headers["Accept"] = request.headers["Accept"]
+    if request.method == "POST" and "Idempotency-Key" in request.headers:
+        forward_headers["Idempotency-Key"] = request.headers["Idempotency-Key"]
 
     # Pass the raw query string through unchanged so encoding, repeated
     # parameters and optional parameters are preserved exactly as received.
@@ -383,7 +385,7 @@ def add_security_headers(response):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = (
-            "Accept, Authorization, Content-Type"
+            "Accept, Authorization, Content-Type, Idempotency-Key"
         )
         response.headers["Access-Control-Max-Age"] = "600"
         response.vary.add("Origin")
