@@ -1,6 +1,9 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 export const MOCK_MODE = import.meta.env.VITE_USE_MOCK_API !== "false";
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 10000];
+const FACILITY_RETRY_DELAYS_MS = [
+  1000, 2000, 4000, 8000, 12000, 15000, 15000, 15000, 15000,
+];
 
 const initialRestrooms = [
   {
@@ -167,7 +170,7 @@ async function request(
   const contentType = response.headers.get("content-type") || "";
   if (!/application\/(?:[\w.-]+\+)?json\b/i.test(contentType)) {
     const error = new Error(
-      "The API repeatedly returned a non-JSON response. Check that VITE_API_BASE_URL points to a healthy Gateway."
+      "The server returned a non-JSON response. If this continues, check the Gateway URL and Render service logs."
     );
     error.status = response.status;
     error.code = "INVALID_API_RESPONSE";
@@ -201,13 +204,17 @@ async function request(
   return payload;
 }
 
-async function requestWithRetry(path, options = {}) {
+async function requestWithRetry(
+  path,
+  options = {},
+  retryDelays = RETRY_DELAYS_MS
+) {
   const { method = "GET" } = options;
   for (let attempt = 0; ; attempt += 1) {
     try {
       return await request(path, options);
     } catch (error) {
-      const delay = RETRY_DELAYS_MS[attempt];
+      const delay = retryDelays[attempt];
       const canRetry =
         method === "GET" || (method === "POST" && Boolean(options.idempotencyKey));
       if (!canRetry || !error.retryable || delay === undefined) {
@@ -221,7 +228,11 @@ async function requestWithRetry(path, options = {}) {
 export const api = {
   async listRestrooms() {
     if (MOCK_MODE) return [...restrooms];
-    return requestWithRetry("/restrooms");
+    return requestWithRetry(
+      "/restrooms",
+      {},
+      FACILITY_RETRY_DELAYS_MS
+    );
   },
   async createRestroom(data, token) {
     if (MOCK_MODE) {

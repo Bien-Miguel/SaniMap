@@ -688,7 +688,7 @@ function selectFacility(id) {
               {loading && (
                 <div className="empty-state">
                   <span className="spinner" />
-                  Loading restroom locations… The first request after inactivity can take up to about a minute.
+                  Waking the server… The first load after inactivity can take over a minute; we’ll retry automatically.
                 </div>
               )}
               {!loading && error && (

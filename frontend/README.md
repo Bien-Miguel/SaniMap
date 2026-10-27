@@ -57,8 +57,8 @@ The Reporting Service stores that key with the report so a retry returns the
 original receipt rather than creating a duplicate.
 
 Render free web services spin down after inactivity and can take about a minute
-to start again. The frontend keeps the facility list loading while its first
-request is in progress and retries temporary failures. The public Gateway
+or longer to start again. The frontend keeps the facility list loading and
+retries temporary failures for roughly 87 seconds before showing an error. The public Gateway
 `/health` endpoint checks only the Gateway; the Registry's own `/health`
 endpoint checks the Registry. A request to Gateway `/restrooms` exercises both
 services. Do not use frequent health pings as a substitute for an always-on
