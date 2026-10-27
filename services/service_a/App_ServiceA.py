@@ -54,6 +54,49 @@ SEED_RESTROOMS = (
         "amenities": ["Handwashing Station"],
         "status": "under_maintenance",
     },
+    {
+        "name": "Manila Ocean Park Restroom",
+        "latitude": 14.5791,
+        "longitude": 120.9723,
+        "operatingHours": "10:00 - 20:00",
+        "pwdAccessible": True,
+        "genderType": "Unisex",
+        "amenities": [
+            "Air-conditioned",
+            "Handwashing Station",
+            "Soap",
+            "Toilet Paper",
+            "Bidet",
+            "Flush Toilet",
+        ],
+        "status": "open",
+    },
+    {
+        "name": "Quirino Grandstand Comfort Room",
+        "latitude": 14.5800,
+        "longitude": 120.9739,
+        "operatingHours": "06:00 - 22:00",
+        "pwdAccessible": True,
+        "genderType": "Unisex",
+        "amenities": [
+            "Handwashing Station",
+            "Soap",
+            "Toilet Paper",
+            "Flush Toilet",
+            "Wheelchair Ramp",
+        ],
+        "status": "open",
+    },
+    {
+        "name": "Relief Map Comfort Room",
+        "latitude": 14.5835,
+        "longitude": 120.9798,
+        "operatingHours": "06:00 - 20:00",
+        "pwdAccessible": True,
+        "genderType": "Unisex",
+        "amenities": ["Handwashing Station", "Soap", "Flush Toilet"],
+        "status": "open",
+    },
 )
 
 
@@ -72,7 +115,7 @@ def get_connection():
 
 
 def initialize_database(database_path=None):
-    """Create the registry table and insert seed records only on first setup."""
+    """Create the registry table and ensure canonical seed facilities exist."""
     path = database_path or app.config["DATABASE"]
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, timeout=10)
@@ -94,29 +137,56 @@ def initialize_database(database_path=None):
             )
             """
         )
-        count = connection.execute(
-            "SELECT COUNT(*) FROM restrooms"
-        ).fetchone()[0]
-        if count == 0:
-            for restroom in SEED_RESTROOMS:
+        legacy_names = {
+            "Manila Ocean Park Comfort Room": "Manila Ocean Park Restroom",
+        }
+        for old_name, seed_name in legacy_names.items():
+            seed_exists = connection.execute(
+                "SELECT 1 FROM restrooms WHERE name = ? LIMIT 1",
+                (seed_name,),
+            ).fetchone()
+            if not seed_exists:
+                connection.execute(
+                    "UPDATE restrooms SET name = ? WHERE name = ?",
+                    (seed_name, old_name),
+                )
+        for restroom in SEED_RESTROOMS:
+            values = (
+                restroom["latitude"],
+                restroom["longitude"],
+                restroom["operatingHours"],
+                int(restroom["pwdAccessible"]),
+                restroom["genderType"],
+                json.dumps(restroom["amenities"]),
+            )
+            existing = connection.execute(
+                "SELECT restroom_id FROM restrooms WHERE name = ? LIMIT 1",
+                (restroom["name"],),
+            ).fetchone()
+            if existing:
                 connection.execute(
                     """
-                    INSERT INTO restrooms (
-                        name, latitude, longitude, operating_hours,
-                        pwd_accessible, gender_type, amenities_json, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    UPDATE restrooms
+                    SET latitude = ?, longitude = ?, operating_hours = ?,
+                        pwd_accessible = ?, gender_type = ?, amenities_json = ?
+                    WHERE name = ?
                     """,
-                    (
-                        restroom["name"],
-                        restroom["latitude"],
-                        restroom["longitude"],
-                        restroom["operatingHours"],
-                        int(restroom["pwdAccessible"]),
-                        restroom["genderType"],
-                        json.dumps(restroom["amenities"]),
-                        restroom["status"],
-                    ),
+                    (*values, restroom["name"]),
                 )
+                continue
+            connection.execute(
+                """
+                INSERT INTO restrooms (
+                    name, latitude, longitude, operating_hours,
+                    pwd_accessible, gender_type, amenities_json, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    restroom["name"],
+                    *values,
+                    restroom["status"],
+                ),
+            )
         connection.commit()
     finally:
         connection.close()

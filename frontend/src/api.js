@@ -1,5 +1,6 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 export const MOCK_MODE = import.meta.env.VITE_USE_MOCK_API !== "false";
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 10000];
 
 const initialRestrooms = [
   {
@@ -26,25 +27,49 @@ const initialRestrooms = [
   },
   {
     restroomId: 3,
-    name: "Manila Ocean Park Comfort Room",
-    latitude: 14.5794,
-    longitude: 120.9732,
-    operatingHours: "06:00-21:00",
+    name: "Manila Ocean Park Restroom",
+    latitude: 14.5791,
+    longitude: 120.9723,
+    operatingHours: "10:00 - 20:00",
     pwdAccessible: true,
-    genderType: "Male/Female",
-    amenities: ["Handwashing Station", "Soap"],
+    genderType: "Unisex",
+    amenities: [
+      "Air-conditioned",
+      "Handwashing Station",
+      "Soap",
+      "Toilet Paper",
+      "Bidet",
+      "Flush Toilet",
+    ],
     status: "open",
   },
   {
     restroomId: 4,
     name: "Quirino Grandstand Comfort Room",
-    latitude: 14.5831,
-    longitude: 120.9761,
-    operatingHours: "06:00-18:00",
-    pwdAccessible: false,
+    latitude: 14.58,
+    longitude: 120.9739,
+    operatingHours: "06:00 - 22:00",
+    pwdAccessible: true,
     genderType: "Unisex",
-    amenities: ["Handwashing Station", "Baby Changing"],
-    status: "closed",
+    amenities: [
+      "Handwashing Station",
+      "Soap",
+      "Toilet Paper",
+      "Flush Toilet",
+      "Wheelchair Ramp",
+    ],
+    status: "open",
+  },
+  {
+    restroomId: 5,
+    name: "Relief Map Comfort Room",
+    latitude: 14.5835,
+    longitude: 120.9798,
+    operatingHours: "06:00 - 20:00",
+    pwdAccessible: true,
+    genderType: "Unisex",
+    amenities: ["Handwashing Station", "Soap", "Flush Toilet"],
+    status: "open",
   },
 ];
 
@@ -131,15 +156,18 @@ async function request(path, { method = "GET", body, token } = {}) {
       "Cannot reach the SaniMap server. Check your connection and try again."
     );
     error.status = 0;
+    error.code = "NETWORK_ERROR";
+    error.retryable = true;
     throw error;
   }
   const contentType = response.headers.get("content-type") || "";
   if (!/application\/(?:[\w.-]+\+)?json\b/i.test(contentType)) {
     const error = new Error(
-      "The API returned a non-JSON response. Check that VITE_API_BASE_URL points to the Gateway."
+      "The API repeatedly returned a non-JSON response. Check that VITE_API_BASE_URL points to a healthy Gateway."
     );
-    error.status = response.ok ? 502 : response.status;
+    error.status = response.status;
     error.code = "INVALID_API_RESPONSE";
+    error.retryable = [502, 503, 504].includes(response.status);
     throw error;
   }
 
@@ -148,8 +176,9 @@ async function request(path, { method = "GET", body, token } = {}) {
     payload = await response.json();
   } catch {
     const error = new Error("The API returned invalid JSON.");
-    error.status = response.ok ? 502 : response.status;
+    error.status = response.status;
     error.code = "INVALID_API_RESPONSE";
+    error.retryable = [502, 503, 504].includes(response.status);
     throw error;
   }
   if (!response.ok) {
@@ -162,15 +191,31 @@ async function request(path, { method = "GET", body, token } = {}) {
     );
     error.status = response.status;
     error.code = errorPayload.error;
+    error.retryable = [502, 503, 504].includes(response.status);
     throw error;
   }
   return payload;
 }
 
+async function requestWithRetry(path, options = {}) {
+  const { method = "GET" } = options;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await request(path, options);
+    } catch (error) {
+      const delay = RETRY_DELAYS_MS[attempt];
+      if (method !== "GET" || !error.retryable || delay === undefined) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 export const api = {
   async listRestrooms() {
     if (MOCK_MODE) return [...restrooms];
-    return request("/restrooms");
+    return requestWithRetry("/restrooms");
   },
   async createRestroom(data, token) {
     if (MOCK_MODE) {
@@ -226,7 +271,7 @@ export const api = {
       if (!report) throw new Error(`Report ${id} was not found.`);
       return report;
     }
-    return request(`/feedback/reports/${id}`);
+    return requestWithRetry(`/feedback/reports/${id}`);
   },
   async reportsForRestroom(id, token) {
     if (MOCK_MODE) {
@@ -236,7 +281,7 @@ export const api = {
       return reports.filter((report) => report.restroomId === Number(id));
     }
     try {
-      return await request(`/feedback/${id}`, { token });
+      return await requestWithRetry(`/feedback/${id}`, { token });
     } catch (err) {
       // The Reporting Service answers 404 when a restroom has no reports yet.
       if (err.status === 404 && err.code === "RESOURCE_NOT_FOUND") return [];
@@ -258,7 +303,7 @@ export const api = {
     const params = new URLSearchParams({ limit: String(limit) });
     if (restroomId) params.set("restroomId", String(restroomId));
     if (status) params.set("status", status);
-    return request(`/feedback?${params.toString()}`, { token });
+    return requestWithRetry(`/feedback?${params.toString()}`, { token });
   },
 
   async updateReportStatus(id, status, token) {
@@ -286,10 +331,10 @@ export const api = {
             },
           }
         : { service: "API Gateway", status: "UP" };
-    return request(all ? "/health/all" : "/health", { token });
+    return requestWithRetry(all ? "/health/all" : "/health", { token });
   },
   async verifyStaff(token) {
-    const result = await request("/auth/verify", { token });
+    const result = await requestWithRetry("/auth/verify", { token });
     if (!["admin", "park_manager"].includes(result.role)) {
       const error = new Error("The Gateway did not verify a staff role.");
       error.status = 403;
@@ -306,7 +351,7 @@ export const api = {
         ],
         attribution: "OpenStreetMap contributors",
       };
-    return request(`/geocode?q=${encodeURIComponent(query)}`);
+    return requestWithRetry(`/geocode?q=${encodeURIComponent(query)}`);
   },
   async directions(start, end) {
     if (MOCK_MODE)
@@ -320,6 +365,6 @@ export const api = {
       end_lng: end.lng,
       profile: "foot-walking",
     });
-    return request(`/directions?${params.toString()}`);
+    return requestWithRetry(`/directions?${params.toString()}`);
   },
 };

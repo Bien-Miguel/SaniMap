@@ -39,9 +39,10 @@ roles.
 
 ## Production deployment
 
-Railway serves the Vite build using `server.mjs` (not Vite's development or
-preview server). Set the frontend service's root to `/frontend`, build with
-`npm ci && npm run build`, and start with `node server.mjs`.
+The production frontend is a Vite build served by `server.mjs` (not Vite's
+development or preview server). On Render, set the frontend service's root to
+`/frontend`, build with `npm ci && npm run build`, and start with
+`node server.mjs`.
 
 At build time, set `VITE_USE_MOCK_API=false` and
 `VITE_API_BASE_URL=https://<gateway-domain>`. Configure the Gateway's
@@ -49,7 +50,27 @@ At build time, set `VITE_USE_MOCK_API=false` and
 `VITE_` value into public browser assets; never put keys, signing secrets, or
 staff tokens in them. If the API URL is missing or returns the frontend HTML
 instead of JSON, API calls fail closed rather than treating that response as
-successful authentication.
+successful authentication. Safe GET requests retry temporary network failures
+and 502/503/504 responses with bounded backoff; mutations are never retried
+automatically.
 
-See the [Railway deployment README](../RAILWAY_DEPLOYMENT_README.md)
-for the full setup and verification steps.
+Render free web services spin down after inactivity and can take about a minute
+to start again. The frontend keeps the facility list loading while its first
+request is in progress and retries temporary failures. The public Gateway
+`/health` endpoint checks only the Gateway; the Registry's own `/health`
+endpoint checks the Registry. A request to Gateway `/restrooms` exercises both
+services. Do not use frequent health pings as a substitute for an always-on
+plan.
+
+The Registry currently uses SQLite. On Render, a local SQLite database on a
+free web service is ephemeral and can be lost when the service spins down,
+restarts, or redeploys. The five built-in Luneta facilities are reseeded when
+the Registry starts, but other facilities added by staff can still disappear.
+Free Render web services cannot attach persistent disks. To preserve all
+SQLite data, upgrade the Registry service to a paid plan,
+attach a persistent disk mounted at `/var/data`, and set
+`SANIMAP_REGISTRY_DB=/var/data/registry.db`. Alternatively, migrate the
+Registry to a managed database and update the application to use it.
+
+See the [Registry service README](../services/service_a/README.md) for its
+database configuration and Render persistence notes.

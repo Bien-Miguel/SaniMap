@@ -1,10 +1,7 @@
-r"""Add the Luneta comfort rooms that the frontend demo lists but the registry seed lacks.
+r"""Add canonical Luneta comfort rooms through the Gateway when needed.
 
-The registry seeds only restrooms 1 and 2 on first start. The mock-mode frontend also
-shows Manila Ocean Park and Quirino Grandstand, so live mode looked incomplete.
-
-This script adds the missing ones through the Gateway as an admin (it skips any
-facility whose name already exists, so running it twice is safe).
+The Registry seeds these facilities automatically. This optional admin script
+can add them to an already-running registry and skips names that already exist.
 
 Usage (venv active, Gateway running, env filled in):
     python tools\seed_luneta.py
@@ -25,24 +22,47 @@ load_dotenv()
 
 FACILITIES = [
     {
-        "name": "Manila Ocean Park Comfort Room",
-        "latitude": 14.5794,
-        "longitude": 120.9732,
-        "operatingHours": "06:00-21:00",
+        "name": "Manila Ocean Park Restroom",
+        "latitude": 14.5791,
+        "longitude": 120.9723,
+        "operatingHours": "10:00 - 20:00",
         "pwdAccessible": True,
-        "genderType": "Male/Female",
-        "amenities": ["Handwashing Station", "Soap"],
+        "genderType": "Unisex",
+        "amenities": [
+            "Air-conditioned",
+            "Handwashing Station",
+            "Soap",
+            "Toilet Paper",
+            "Bidet",
+            "Flush Toilet",
+        ],
         "status": "open",
     },
     {
         "name": "Quirino Grandstand Comfort Room",
-        "latitude": 14.5831,
-        "longitude": 120.9761,
-        "operatingHours": "06:00-18:00",
-        "pwdAccessible": False,
+        "latitude": 14.5800,
+        "longitude": 120.9739,
+        "operatingHours": "06:00 - 22:00",
+        "pwdAccessible": True,
         "genderType": "Unisex",
-        "amenities": ["Handwashing Station", "Baby Changing"],
-        "status": "closed",
+        "amenities": [
+            "Handwashing Station",
+            "Soap",
+            "Toilet Paper",
+            "Flush Toilet",
+            "Wheelchair Ramp",
+        ],
+        "status": "open",
+    },
+    {
+        "name": "Relief Map Comfort Room",
+        "latitude": 14.5835,
+        "longitude": 120.9798,
+        "operatingHours": "06:00 - 20:00",
+        "pwdAccessible": True,
+        "genderType": "Unisex",
+        "amenities": ["Handwashing Station", "Soap", "Flush Toilet"],
+        "status": "open",
     },
 ]
 

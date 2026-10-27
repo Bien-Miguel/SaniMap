@@ -22,9 +22,122 @@ class RegistryServiceTests(unittest.TestCase):
         response = self.client.get("/restrooms")
         self.assertEqual(response.status_code, 200)
         records = response.get_json()
-        self.assertEqual([item["restroomId"] for item in records], [1, 2])
+        self.assertEqual([item["restroomId"] for item in records], [1, 2, 3, 4, 5])
         self.assertEqual(records[0]["latitude"], 14.5826)
         self.assertEqual(records[0]["longitude"], 120.9787)
+        ocean_park, quirino, relief_map = records[2:]
+        self.assertEqual(ocean_park["name"], "Manila Ocean Park Restroom")
+        self.assertEqual(
+            (ocean_park["latitude"], ocean_park["longitude"]), (14.5791, 120.9723)
+        )
+        self.assertEqual(ocean_park["operatingHours"], "10:00 - 20:00")
+        self.assertTrue(ocean_park["pwdAccessible"])
+        self.assertEqual(ocean_park["genderType"], "Unisex")
+        self.assertEqual(
+            ocean_park["amenities"],
+            [
+                "Air-conditioned",
+                "Handwashing Station",
+                "Soap",
+                "Toilet Paper",
+                "Bidet",
+                "Flush Toilet",
+            ],
+        )
+        self.assertEqual(quirino["name"], "Quirino Grandstand Comfort Room")
+        self.assertEqual(
+            (quirino["latitude"], quirino["longitude"]), (14.58, 120.9739)
+        )
+        self.assertEqual(quirino["operatingHours"], "06:00 - 22:00")
+        self.assertTrue(quirino["pwdAccessible"])
+        self.assertEqual(quirino["genderType"], "Unisex")
+        self.assertEqual(quirino["status"], "open")
+        self.assertEqual(
+            quirino["amenities"],
+            [
+                "Handwashing Station",
+                "Soap",
+                "Toilet Paper",
+                "Flush Toilet",
+                "Wheelchair Ramp",
+            ],
+        )
+        self.assertEqual(relief_map["name"], "Relief Map Comfort Room")
+        self.assertEqual(
+            (relief_map["latitude"], relief_map["longitude"]), (14.5835, 120.9798)
+        )
+        self.assertEqual(relief_map["operatingHours"], "06:00 - 20:00")
+        self.assertTrue(relief_map["pwdAccessible"])
+        self.assertEqual(relief_map["genderType"], "Unisex")
+        self.assertEqual(relief_map["status"], "open")
+        self.assertEqual(
+            relief_map["amenities"],
+            ["Handwashing Station", "Soap", "Flush Toilet"],
+        )
+
+    def test_seed_adds_missing_facilities_and_preserves_existing_status(self):
+        with registry.app.app_context():
+            with registry.get_connection() as connection:
+                connection.execute(
+                    """
+                    UPDATE restrooms
+                    SET latitude = ?, longitude = ?, pwd_accessible = ?, status = ?
+                    WHERE name = ?
+                    """,
+                    (
+                        14.5831,
+                        120.9761,
+                        0,
+                        "closed",
+                        "Quirino Grandstand Comfort Room",
+                    ),
+                )
+
+        registry.initialize_database(self.database_path)
+        records = self.client.get("/restrooms").get_json()
+        quirino = next(
+            item
+            for item in records
+            if item["name"] == "Quirino Grandstand Comfort Room"
+        )
+        self.assertEqual(
+            (quirino["latitude"], quirino["longitude"]), (14.58, 120.9739)
+        )
+        self.assertTrue(quirino["pwdAccessible"])
+        self.assertEqual(quirino["status"], "closed")
+        self.assertEqual(len(records), 5)
+
+    def test_seed_renames_legacy_ocean_park_entry_without_duplicating_it(self):
+        with registry.app.app_context():
+            with registry.get_connection() as connection:
+                connection.execute(
+                    """
+                    UPDATE restrooms
+                    SET name = ?, latitude = ?, longitude = ?
+                    WHERE name = ?
+                    """,
+                    (
+                        "Manila Ocean Park Comfort Room",
+                        14.5794,
+                        120.9732,
+                        "Manila Ocean Park Restroom",
+                    ),
+                )
+
+        registry.initialize_database(self.database_path)
+        records = self.client.get("/restrooms").get_json()
+        ocean_park = [
+            item for item in records if item["name"] == "Manila Ocean Park Restroom"
+        ]
+        self.assertEqual(len(ocean_park), 1)
+        self.assertEqual(
+            (ocean_park[0]["latitude"], ocean_park[0]["longitude"]),
+            (14.5791, 120.9723),
+        )
+        self.assertFalse(
+            any(item["name"] == "Manila Ocean Park Comfort Room" for item in records)
+        )
+        self.assertEqual(len(records), 5)
 
     def test_records_remain_after_database_reinitialization(self):
         created = self.client.post(

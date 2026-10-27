@@ -14,8 +14,10 @@ python .\services\service_a\App_ServiceA.py
 
 The default database is `services/service_a/registry.db`. Set
 `SANIMAP_REGISTRY_DB` to use a different database path. The database and seed
-records are initialized automatically; seed data is added only when the table
-is empty.
+records are initialized automatically. The five canonical Luneta facilities
+are inserted whenever missing, including when the database already contains
+other records. Existing seeded facility details are aligned with the canonical
+coordinates and amenities on startup, while their current status is preserved.
 
 ## Endpoints
 
@@ -43,6 +45,24 @@ type.
 Railway deployment uses this directory as the service root and starts the app
 with `gunicorn --bind 0.0.0.0:$PORT App_ServiceA:app`. Attach a persistent
 volume and set `SANIMAP_REGISTRY_DB` to a path inside its mount.
+
+## Render deployment and persistence
+
+The service exposes `GET /health` for a simple health check and
+`GET /restrooms` for both a health/data check and a request that wakes a
+spun-down service. The Gateway also exposes `GET /health`, which checks only
+the Gateway; `GET /restrooms` through the Gateway exercises the Registry
+upstream.
+
+This service uses SQLite. Its default database path is under this service's
+source directory, which is ephemeral on Render. A free Render web service
+spins down after inactivity and loses local filesystem changes when it spins
+down or restarts; free services cannot use persistent disks. For durable SQLite
+storage, use a paid web service, attach a disk mounted at `/var/data`, and set
+`SANIMAP_REGISTRY_DB=/var/data/registry.db`. Without durable storage, records
+created at runtime (for example, through the admin dashboard) can disappear
+after a spin-down, restart, or redeploy. The canonical five seed facilities
+will be inserted again automatically when the Registry starts.
 
 ## Example
 
