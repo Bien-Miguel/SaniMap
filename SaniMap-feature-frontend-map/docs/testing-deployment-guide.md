@@ -1,7 +1,7 @@
 # SaniMap setup, testing, monitoring, and deployment guide
 
 This guide matches the current repository. Do not treat mock data or a green
-Gateway-only health check as proof that both backend services are healthy.
+Gateway-only health check as proof that all three business services are healthy.
 
 ## 1. What is in the repository today
 
@@ -9,9 +9,10 @@ Gateway-only health check as proof that both backend services are healthy.
 | --- | --- |
 | Registry | SQLite-backed REST service, seeded with two restroom records. |
 | Reporting | SQLite-backed reporting service; creates reports and validates restroom IDs against the registry. |
-| Gateway | Routes registry, reporting, geocoding, and directions requests. Staff-only routes use JWT roles. |
+| Maintenance | Separate SQLite-backed work orders; links jobs to existing reports and tracks assignment, priority, status, and change history. |
+| Gateway | Routes registry, reporting, maintenance, geocoding, and directions requests. Staff-only routes use JWT roles. |
 | Frontend | React/Vite app; mock mode is the default. Use `VITE_USE_MOCK_API=false` to use the gateway. |
-| Health monitoring | `GET /health` checks only the gateway process. Staff-only `GET /health/all` now checks both backend services and returns HTTP 503 if either is down. |
+| Health monitoring | `GET /health` checks only the gateway process. Staff-only `GET /health/all` checks all three business services and returns HTTP 503 if one is down. |
 | Coverage analytics | Not implemented. There is no coverage endpoint or service that identifies geographic gaps or repeated unresolved reports. |
 | Report resolution | Staff can list reports across restrooms and update report status through the Gateway; check the current route table and Postman collection for role requirements. |
 | Automation/deployment | The Postman collection is `SaniMap.postman_collection.json` at the repository root. Railway setup and post-deployment JMeter instructions are in [the Railway guide](railway-deployment-jmeter.md). CI still needs to be configured. |
@@ -62,9 +63,10 @@ mock data and does not prove backend connectivity.
    ```text
    SANIMAP_REGISTRY_URL=http://127.0.0.1:5001
    SANIMAP_REPORTING_URL=http://127.0.0.1:5002
+   SANIMAP_MAINTENANCE_URL=http://127.0.0.1:5003
    ```
 
-   The Reporting Service uses `SANIMAP_REGISTRY_URL` to check that a restroom exists before saving a report. The gateway uses both URLs to route requests and check backend health.
+   The Reporting Service uses `SANIMAP_REGISTRY_URL` to check that a restroom exists before saving a report. Maintenance uses `SANIMAP_REPORTING_URL` to verify the source report before creating a work order. The gateway uses all three URLs to route requests and check backend health.
 
    These are API base URLs, not web pages; opening `http://127.0.0.1:5002/` directly returns 404 because the service has no root route. To check the service in a browser, open `http://127.0.0.1:5002/health` and confirm it returns HTTP 200 with `"status": "UP"`.
 
@@ -88,13 +90,13 @@ mock data and does not prove backend connectivity.
 
 ## 4. Start the services
 
-Run each command in a separate PowerShell terminal from the repository root. Start the Registry first because the Reporting Service calls it.
+Run each command in a separate PowerShell terminal from the repository root. Start the Registry first because the Reporting Service calls it; start Reporting before Maintenance because Maintenance verifies each linked report.
 
 Before starting, check whether the default ports are already in use:
 
 ```powershell
 Get-NetTCPConnection -State Listen |
-  Where-Object { $_.LocalPort -in 5000, 5001, 5002 } |
+  Where-Object { $_.LocalPort -in 5000, 5001, 5002, 5003 } |
   Select-Object LocalPort, OwningProcess
 ```
 
@@ -112,14 +114,20 @@ $env:SANIMAP_REGISTRY_URL = "http://127.0.0.1:5101"
 $env:SANIMAP_REPORTING_DB = Join-Path $env:TEMP "sanimap-reporting-local-test.db"
 python -m flask --app services.service_b.App_ServiceB:app run --host 127.0.0.1 --port 5102
 
+# Maintenance terminal
+$env:SANIMAP_REPORTING_URL = "http://127.0.0.1:5102"
+$env:SANIMAP_WORK_ORDERS_DB = Join-Path $env:TEMP "sanimap-work-orders-local-test.db"
+python -m flask --app services.service_c.App_ServiceC:app run --host 127.0.0.1 --port 5103
+
 # Gateway terminal
 $env:SANIMAP_REGISTRY_URL = "http://127.0.0.1:5101"
 $env:SANIMAP_REPORTING_URL = "http://127.0.0.1:5102"
+$env:SANIMAP_MAINTENANCE_URL = "http://127.0.0.1:5103"
 $env:GATEWAY_PORT = "5100"
 python gateway\App_Gateway.py
 ```
 
-For this alternate-port setup, use `http://127.0.0.1:5100` as Postman's `baseUrl` and `SANIMAP_GATEWAY_URL` in `frontend/.env.local`. Use the matching Registry/Reporting URLs when checking their health. The file-based test databases remain in the system temp folder; do not point concurrent services at the same SQLite file.
+For this alternate-port setup, use `http://127.0.0.1:5100` as Postman's `baseUrl` and `SANIMAP_GATEWAY_URL` in `frontend/.env.local`. Use the matching Registry, Reporting, and Maintenance URLs when checking their health. The file-based test databases remain in the system temp folder; do not point concurrent services at the same SQLite file.
 
 **Terminal 1 — Registry Service (port 5001):**
 
@@ -135,14 +143,23 @@ python -m flask --app services.service_a.App_ServiceA:app run --host 127.0.0.1 -
 python -m flask --app services.service_b.App_ServiceB:app run --host 127.0.0.1 --port 5002
 ```
 
-**Terminal 3 — API Gateway (port 5000):**
+**Terminal 3 — Maintenance Service (port 5003):**
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
+$env:SANIMAP_REPORTING_URL = "http://127.0.0.1:5002"
+python -m flask --app services.service_c.App_ServiceC:app run --host 127.0.0.1 --port 5003
+```
+
+**Terminal 4 — API Gateway (port 5000):**
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:SANIMAP_MAINTENANCE_URL = "http://127.0.0.1:5003"
 python gateway\App_Gateway.py
 ```
 
-The Registry and Reporting services create their SQLite databases and seed demo records on first startup. The Flask commands above are for local development only, not production.
+The Registry and Reporting services initialize their databases and seed demo records on first startup. Maintenance creates its own work-order database. The Flask commands above are for local development only, not production.
 
 Check each component before opening the frontend:
 

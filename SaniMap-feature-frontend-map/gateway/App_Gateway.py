@@ -59,6 +59,9 @@ SERVICE_A_URL = os.environ.get(
 SERVICE_B_URL = os.environ.get(
     "SANIMAP_REPORTING_URL", "http://127.0.0.1:5002"
 ).rstrip("/")
+SERVICE_C_URL = os.environ.get(
+    "SANIMAP_MAINTENANCE_URL", "http://127.0.0.1:5003"
+).rstrip("/")
 TIMEOUT_SECONDS = 5
 
 # Methods the gateway is willing to forward to a backend service.
@@ -120,6 +123,11 @@ ROUTE_POLICY = {
     ("GET", "/feedback/<int:restroom_id>"): STAFF,
     ("GET", "/feedback/reports/<int:report_id>"): PUBLIC,
     ("PUT", "/feedback/reports/<int:report_id>/status"): STAFF,
+    ("GET", "/work-orders"): STAFF,
+    ("POST", "/work-orders"): STAFF,
+    ("GET", "/work-orders/<int:work_order_id>"): STAFF,
+    ("PUT", "/work-orders/<int:work_order_id>"): STAFF,
+    ("GET", "/work-orders/<int:work_order_id>/history"): STAFF,
 }
 
 
@@ -810,7 +818,11 @@ def gateway_health():
 @app.route("/health/all", methods=["GET"])
 def aggregated_health():
     results = {}
-    for name, base_url in [("registry_service", SERVICE_A_URL), ("reporting_service", SERVICE_B_URL)]:
+    for name, base_url in [
+        ("registry_service", SERVICE_A_URL),
+        ("reporting_service", SERVICE_B_URL),
+        ("maintenance_service", SERVICE_C_URL),
+    ]:
         try:
             r = requests.get(f"{base_url}/health", timeout=TIMEOUT_SECONDS)
             payload = r.json()
@@ -861,6 +873,21 @@ def get_report_status(report_id):
 @app.route("/feedback/reports/<int:report_id>/status", methods=["PUT"])
 def update_report_status(report_id):
     return forward_request(SERVICE_B_URL, f"/feedback/reports/{report_id}/status")
+
+
+@app.route("/work-orders", methods=["GET", "POST"])
+def work_orders_root():
+    return forward_request(SERVICE_C_URL, "/work-orders")
+
+
+@app.route("/work-orders/<int:work_order_id>", methods=["GET", "PUT"])
+def work_order_detail(work_order_id):
+    return forward_request(SERVICE_C_URL, f"/work-orders/{work_order_id}")
+
+
+@app.route("/work-orders/<int:work_order_id>/history", methods=["GET"])
+def work_order_history(work_order_id):
+    return forward_request(SERVICE_C_URL, f"/work-orders/{work_order_id}/history")
 
 
 if __name__ == "__main__":

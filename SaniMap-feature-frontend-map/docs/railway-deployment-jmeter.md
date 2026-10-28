@@ -1,6 +1,6 @@
 # Railway deployment and post-deployment JMeter guide
 
-This guide deploys SaniMap as four Railway services from one GitHub repository.
+This guide deploys SaniMap as five Railway services from one GitHub repository.
 Docker is **not required**: Railway can use Railpack to install Python/Node
 dependencies and build each service. Docker is an optional alternative if you
 later need custom operating-system packages or a fully controlled image.
@@ -14,8 +14,8 @@ The following are application source, runtime manifests, tests, or useful
 project documentation and should be in the feature branch:
 
 - `gateway/App_Gateway.py` and `gateway/requirements.txt`
-- `services/service_a/` and `services/service_b/`, including each service's
-  `requirements.txt`
+- `services/service_a/`, `services/service_b/`, and `services/service_c/`,
+  including each service's `requirements.txt`
 - `frontend/`, `frontend/package.json`, `frontend/package-lock.json`, and
   `frontend/server.mjs`
 - `requirements.txt`, `tests/`, and `tools/`
@@ -69,15 +69,16 @@ merge or push directly to `main` before the review and deployment checks pass.
 
 1. In Railway, create a project from the GitHub repository and choose the
    `feature/railway-deployment` branch for staging.
-2. Add four services from the same repository. Give them these exact names so
-   the variable references below work: `Registry`, `Reporting`, `Gateway`,
-   and `Frontend`.
+2. Add five services from the same repository. Give them these exact names so
+   the variable references below work: `Registry`, `Reporting`, `Maintenance`,
+   `Gateway`, and `Frontend`.
 3. Use each service's **Root Directory** to isolate its build context:
 
    | Railway service | Root Directory |
    | --- | --- |
    | Registry | `/services/service_a` |
    | Reporting | `/services/service_b` |
+   | Maintenance | `/services/service_c` |
    | Gateway | `/gateway` |
    | Frontend | `/frontend` |
 
@@ -89,6 +90,7 @@ merge or push directly to `main` before the review and deployment checks pass.
    | --- | --- | --- | --- |
    | Registry | `pip install -r requirements.txt` | `gunicorn --bind 0.0.0.0:$PORT App_ServiceA:app` | `/health` |
    | Reporting | `pip install -r requirements.txt` | `gunicorn --bind 0.0.0.0:$PORT App_ServiceB:app` | `/health` |
+   | Maintenance | `pip install -r requirements.txt` | `gunicorn --bind 0.0.0.0:$PORT App_ServiceC:app` | `/health` |
    | Gateway | `pip install -r requirements.txt` | `gunicorn --bind 0.0.0.0:$PORT App_Gateway:app` | `/health` |
    | Frontend | `npm ci && npm run build` | `node server.mjs` | `/` |
 
@@ -120,6 +122,17 @@ SANIMAP_REGISTRY_URL=http://${{Registry.RAILWAY_PRIVATE_DOMAIN}}:${{Registry.POR
 
 Attach a separate Railway Volume to this service with mount path `/data`.
 
+### Maintenance
+
+```text
+SANIMAP_WORK_ORDERS_DB=/data/work_orders.db
+SANIMAP_REPORTING_URL=http://${{Reporting.RAILWAY_PRIVATE_DOMAIN}}:${{Reporting.PORT}}
+```
+
+Attach a separate Railway Volume to this service with mount path `/data`.
+Maintenance verifies new jobs against Reporting and owns its work-order
+assignment, priority, status, and history data.
+
 ### Gateway
 
 ```text
@@ -128,6 +141,7 @@ JWT_ISSUER=sanimap-gateway
 JWT_AUDIENCE=sanimap-api
 SANIMAP_REGISTRY_URL=http://${{Registry.RAILWAY_PRIVATE_DOMAIN}}:${{Registry.PORT}}
 SANIMAP_REPORTING_URL=http://${{Reporting.RAILWAY_PRIVATE_DOMAIN}}:${{Reporting.PORT}}
+SANIMAP_MAINTENANCE_URL=http://${{Maintenance.RAILWAY_PRIVATE_DOMAIN}}:${{Maintenance.PORT}}
 SANIMAP_CORS_ORIGINS=https://${{Frontend.RAILWAY_PUBLIC_DOMAIN}}
 ORS_API_KEY=<your OpenRouteService key, optional>
 ```
@@ -155,13 +169,13 @@ origin and redeploy the Gateway.
 
 ## 5. Deploy and verify the service graph
 
-1. Deploy Registry and Reporting. Confirm each Railway deployment is healthy
+1. Deploy Registry and Reporting, then Maintenance. Confirm each deployment is healthy
    at `/health`.
-2. Confirm both volumes are mounted at `/data`, then verify each service
+2. Confirm the three volumes are mounted at `/data`, then verify each service
    starts without a database-path error. Keep each SQLite service at one
    replica; SQLite on a volume is not a multi-replica database.
 3. Deploy Gateway. Confirm `/health` succeeds. The Gateway must reach the
-   Registry and Reporting URLs over Railway private networking. Do not create
+   Registry, Reporting, and Maintenance URLs over Railway private networking. Do not create
    public domains for either backend service.
 4. Generate a public Railway domain only for Gateway and Frontend. If the
    domain variable references were not available during the first deployment,
@@ -171,7 +185,7 @@ origin and redeploy the Gateway.
 6. Open browser developer tools. Confirm API requests use the Gateway domain,
    do not fail with CORS errors, and return live Registry data (not mock data).
 7. Confirm Gateway `/health/all` using a short-lived staff token. It should
-   report both backend services as `UP`. Configure an external uptime monitor
+   report all three business services as `UP`. Configure an external uptime monitor
    separately; Railway deployment healthchecks validate startup and are not
    continuous monitoring.
 
@@ -194,7 +208,7 @@ Run the collection and confirm the expected statuses:
 | --- | ---: |
 | `GET /health` | 200 |
 | `GET /health/all` without staff token | 401 |
-| `GET /health/all` with admin or manager token | 200; both services `UP` |
+| `GET /health/all` with admin or manager token | 200; Registry, Reporting, and Maintenance are `UP` |
 | `GET /restrooms` | 200 |
 | `GET /feedback` without staff token | 401 |
 | `GET /feedback` with staff token | 200 |
@@ -276,7 +290,7 @@ load tests so they do not consume external-provider quotas.
 
 ## 8. Docker, scaling, and deployment boundaries
 
-Docker is not needed for the four Railway Railpack deployments described here.
+Docker is not needed for the five Railway Railpack deployments described here.
 Use Docker only if you need reproducible custom images or system-level
 dependencies not supplied by Railpack.
 
