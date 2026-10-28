@@ -1,7 +1,8 @@
 # SaniMap
 
-SaniMap is a Luneta Park comfort-room finder with a React map, a Registry
-service, a Reporting service, and a JWT-protected API Gateway.
+SaniMap is a Luneta Park comfort-room finder with a React map, three distinct
+business services (Registry, Reporting, and Maintenance), and a JWT-protected
+API Gateway.
 
 ## Project structure
 
@@ -11,6 +12,7 @@ service, a Reporting service, and a JWT-protected API Gateway.
 | `gateway/` | Public API entry point, authorization, routing, and external API integrations |
 | `services/service_a/` | SQLite-backed restroom Registry |
 | `services/service_b/` | SQLite-backed visitor Reporting service |
+| `services/service_c/` | SQLite-backed maintenance work orders and event history |
 | `tests/` | Python unit and integration tests |
 | `tools/` | Local seed and short-lived staff-token utilities |
 | `SaniMap.postman_collection.json` | Postman API smoke and integration requests |
@@ -32,9 +34,12 @@ characters), and fill in the optional ORS key only if you want directions.
 Never commit `.env`, staff tokens, or API keys.
 
 Start the Registry (`python services\service_a\App_ServiceA.py`), Reporting
-(`python services\service_b\App_ServiceB.py`), and Gateway
-(`python gateway\App_Gateway.py`) in separate terminals. Start the frontend
-with `npm --prefix frontend run dev`. For a connected local frontend, copy
+(`python services\service_b\App_ServiceB.py`), Maintenance
+(`python services\service_c\App_ServiceC.py`), and Gateway
+(`python gateway\App_Gateway.py`) in separate terminals. The Maintenance
+Service validates each new work order against Reporting; the Gateway routes
+staff work-order requests to it. Start the frontend with
+`npm --prefix frontend run dev`. For a connected local frontend, copy
 `frontend\.env.example` to `frontend\.env.local` and set
 `VITE_USE_MOCK_API=false`.
 
@@ -48,15 +53,16 @@ npm --prefix frontend run build
 ## Deployment
 
 Docker is optional. Railway can build each service from its subdirectory using
-Railpack. Configure four Railway services (Gateway, Registry, Reporting, and
-Frontend), persistent volumes for the two SQLite services, and secret variables
-in Railway—not in source control.
+Railpack. Configure five Railway services (Gateway, Registry, Reporting,
+Maintenance, and Frontend), persistent volumes for all three SQLite services,
+and secret variables in Railway—not in source control.
 
 Follow the [Railway deployment and post-deployment JMeter guide](docs/railway-deployment-jmeter.md)
 for exact service roots, build/start commands, variables, health checks, data
 persistence, and a cautious staging test plan. The
 [local setup and API testing guide](docs/testing-deployment-guide.md) covers
-service and Postman checks.
+service and Postman checks. For Render configuration, private service
+connections, and persistent disks, see the [Render deployment guide](docs/render-deployment.md).
 
 ## Important limitations
 

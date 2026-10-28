@@ -149,6 +149,23 @@ class GatewayForwardingTests(GatewayTestCase):
             self.mock_request.call_args[0][1], "http://127.0.0.1:5002/feedback/reports/7"
         )
 
+    def test_work_order_routes_are_forwarded_to_maintenance_service(self):
+        self.client.post(
+            "/work-orders",
+            json={"reportId": 501},
+            headers=self.manager,
+        )
+        self.assertEqual(
+            self.mock_request.call_args[0][1],
+            "http://127.0.0.1:5003/work-orders",
+        )
+
+        self.client.get("/work-orders/12/history", headers=self.manager)
+        self.assertEqual(
+            self.mock_request.call_args[0][1],
+            "http://127.0.0.1:5003/work-orders/12/history",
+        )
+
     def test_backend_down_returns_503_json(self):
         self.mock_request.side_effect = requests.exceptions.ConnectionError()
 
@@ -321,7 +338,7 @@ class GatewayAuthorizationTests(GatewayTestCase):
         unavailable.json.return_value = {"status": "DOWN"}
         with patch(
             "gateway.App_Gateway.requests.get",
-            side_effect=[healthy, unavailable],
+            side_effect=[healthy, unavailable, healthy],
         ):
             response = self.client.get("/health/all", headers=self.manager)
 
@@ -338,7 +355,7 @@ class GatewayAuthorizationTests(GatewayTestCase):
         invalid.json.side_effect = ValueError("invalid JSON")
         with patch(
             "gateway.App_Gateway.requests.get",
-            side_effect=[healthy, invalid],
+            side_effect=[healthy, invalid, healthy],
         ):
             response = self.client.get("/health/all", headers=self.admin)
 
@@ -356,6 +373,18 @@ class GatewayAuthorizationTests(GatewayTestCase):
             200,
         )
         self.assertEqual(self.client.get("/feedback/reports/1").status_code, 200)
+
+    def test_work_orders_require_staff_authentication(self):
+        response = self.client.get("/work-orders")
+        self.assertEqual(response.status_code, 401)
+        self.mock_request.assert_not_called()
+
+        response = self.client.get("/work-orders", headers=self.manager)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.mock_request.call_args[0][1],
+            "http://127.0.0.1:5003/work-orders",
+        )
 
     def test_every_gateway_route_has_an_access_policy(self):
         for rule in gateway.app.url_map.iter_rules():
